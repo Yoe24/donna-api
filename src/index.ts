@@ -1,0 +1,63 @@
+import express from 'express';
+import cors from 'cors';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+import healthRoutes from './routes/health';
+import kpisRoutes from './routes/kpis';
+import { createEmailRoutes } from './routes/emails';
+import { createDraftRoutes } from './routes/drafts';
+
+const app = express();
+const httpServer = createServer(app);
+
+// CORS configuration
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  credentials: true,
+};
+
+// Socket.io setup
+const io = new Server(httpServer, {
+  cors: corsOptions,
+});
+
+// Middleware
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Socket.io connection handling
+io.on('connection', (socket) => {
+  console.log(`🔌 Client connected: ${socket.id}`);
+
+  socket.on('disconnect', () => {
+    console.log(`🔌 Client disconnected: ${socket.id}`);
+  });
+});
+
+// Routes
+app.use('/health', healthRoutes);
+app.use('/api/kpis', kpisRoutes);
+app.use('/api/emails', createEmailRoutes(io));
+app.use('/api/drafts', createDraftRoutes(io));
+
+// Error handling middleware
+app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+const PORT = process.env.PORT || 3000;
+
+httpServer.listen(PORT, () => {
+  console.log(`🚀 Donna MVP server running on port ${PORT}`);
+  console.log(`📡 Socket.io ready for real-time updates`);
+  console.log(`🌐 CORS enabled for: ${corsOptions.origin}`);
+});
+
+export { io };
+export default app;

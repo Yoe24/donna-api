@@ -1,0 +1,39 @@
+{
+  "name": "donna-mvp",
+  "version": "1.0.0",
+  "description": "Donna MVP - AI Legal Email Assistant",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:push": "tsx src/scripts/push-schema.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "pg": "^8.11.3",
+    "bull": "^4.12.0",
+    "ioredis": "^5.3.2",
+    "socket.io": "^4.7.4",
+    "openai": "^4.28.0",
+    "zod": "^3.22.4",
+    "uuid": "^9.0.1",
+    "mailparser": "^3.6.6"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/pg": "^8.10.9",
+    "@types/uuid": "^9.0.8",
+    "@types/mailparser": "^3.4.4",
+    "@types/node": "^20.10.6",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
