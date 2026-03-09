@@ -12,45 +12,42 @@ router.post('/webhook', async (req, res) => {
     const { 
       subject,
       sender,
-      recipients,
       body_text,
-      body_html,
-      message_id,
-      user_id = 'default-user' // Will be determined by routing rules
+      user_id = '00000000-0000-0000-0000-000000000000'
     } = req.body;
 
-    if (!subject || !sender || !body_text) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!subject || !sender) {
+      return res.status(400).json({ error: 'Missing required fields (subject, sender)' });
     }
 
-    // 1. Insert email into Supabase with status 'en_attente'
+    // 1. Insert email into Supabase - ADAPTÉ sans contenu_original
     const { data: email, error: insertError } = await supabase
       .from('emails')
       .insert({
         user_id: user_id,
         expediteur: sender,
         objet: subject,
-        contenu_original: body_text,
+        resume: null,
+        brouillon: null,
         pipeline_step: 'en_attente',
         statut: 'en_attente',
-        contexte_choisi: 'standard' // Default context
+        contexte_choisi: 'standard'
       })
       .select()
       .single();
 
     if (insertError) {
       console.error('❌ Failed to insert email:', insertError);
-      return res.status(500).json({ error: 'Database error' });
+      return res.status(500).json({ error: 'Database error: ' + insertError.message });
     }
 
     console.log('✅ Email inserted:', email.id);
 
     // 2. Start AI processing asynchronously
-    // This will update pipeline_step in real-time
     processEmailWithAI(email.id, {
       subject,
       sender,
-      body: body_text,
+      body: body_text || '',
       userId: user_id
     }).catch(err => {
       console.error('❌ AI processing error:', err);
