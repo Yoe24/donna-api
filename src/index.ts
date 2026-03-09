@@ -3,6 +3,8 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
+import webhookRoutes from './routes/webhook';
+import { testSupabaseConnection } from './config/supabase';
 
 dotenv.config();
 
@@ -14,7 +16,7 @@ import { createDraftRoutes } from './routes/drafts';
 const app = express();
 const httpServer = createServer(app);
 
-// CORS configuration
+// CORS configuration - Allow AgentMail webhook
 const corsOptions = {
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
@@ -45,6 +47,9 @@ app.use('/api/kpis', kpisRoutes);
 app.use('/api/emails', createEmailRoutes(io));
 app.use('/api/drafts', createDraftRoutes(io));
 
+// NEW: AgentMail webhook route
+app.use('/webhook', webhookRoutes);
+
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Unhandled error:', err);
@@ -53,11 +58,24 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 
 const PORT = process.env.PORT || 3000;
 
-httpServer.listen(PORT, () => {
-  console.log(`🚀 Donna MVP server running on port ${PORT}`);
-  console.log(`📡 Socket.io ready for real-time updates`);
-  console.log(`🌐 CORS enabled for: ${corsOptions.origin}`);
-});
+// Test Supabase connection on startup
+async function startServer() {
+  console.log('🔌 Testing Supabase connection...');
+  const connected = await testSupabaseConnection();
+  
+  if (!connected) {
+    console.warn('⚠️  Supabase not connected. Some features may not work.');
+  }
+
+  httpServer.listen(PORT, () => {
+    console.log(`🚀 Donna MVP server running on port ${PORT}`);
+    console.log(`📡 Socket.io ready for real-time updates`);
+    console.log(`🌐 CORS enabled for: ${corsOptions.origin}`);
+    console.log(`📨 Webhook endpoint: POST http://localhost:${PORT}/webhook/webhook`);
+  });
+}
+
+startServer();
 
 export { io };
 export default app;
