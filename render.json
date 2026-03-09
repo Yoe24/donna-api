@@ -1,0 +1,8 @@
+{
+  "buildCommand": "npm install && npx tsc",
+  "startCommand": "npm start",
+  "env": {
+    "NODE_ENV": "production",
+    "PORT": "10000"
+  }
+}
