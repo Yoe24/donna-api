@@ -13,7 +13,7 @@ router.post('/webhook', async (req, res) => {
       subject,
       sender,
       body_text,
-      user_id = '00000000-0000-0000-0000-000000000000'
+      user_id = '00000000-0000-0000-0000-000000000001'
     } = req.body;
 
     if (!subject || !sender) {
