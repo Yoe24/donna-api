@@ -55,6 +55,7 @@ export async function generateDraft(
     ],
     temperature: 0.3,
     response_format: { type: 'json_object' },
+    store: false,
   });
 
   const content = response.choices[0]?.message?.content;

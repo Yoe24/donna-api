@@ -51,3 +51,21 @@ Date : 2026-03-26
 - Frontend : `src/lib/supabase.ts`, `.env.example`, `.gitignore`
 
 ---
+
+## Correction 3 : Ajout de store:false sur tous les appels OpenAI
+
+**Statut : FAIT**
+
+### Ce qui a été fait :
+Ajout de `store: false` sur les 3 appels `openai.chat.completions.create` pour empêcher OpenAI de stocker les données juridiques confidentielles :
+
+1. `src/services/ai-processor.ts` : génération de brouillon (gpt-4o)
+2. `src/services/llm/facteur.ts` : classification d'emails (gpt-4o-mini)
+3. `src/services/llm/plume.ts` : rédaction de réponses (gpt-4o-mini)
+
+### Fichiers modifiés :
+- `src/services/ai-processor.ts`
+- `src/services/llm/facteur.ts`
+- `src/services/llm/plume.ts`
+
+---

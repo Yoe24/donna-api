@@ -34,13 +34,14 @@ export async function classifyEmail(
     model: 'gpt-4o-mini',
     messages: [
       { role: 'system', content: CLASSIFICATION_PROMPT },
-      { 
-        role: 'user', 
+      {
+        role: 'user',
         content: `Objet: ${subject}\n\nCorps:\n${body.substring(0, 4000)}` // Limit to avoid token overflow
       },
     ],
     temperature: 0.1,
     response_format: { type: 'json_object' },
+    store: false,
   });
 
   const content = response.choices[0]?.message?.content;

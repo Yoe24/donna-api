@@ -116,7 +116,8 @@ async function generateDraft(params: DraftParams): Promise<string> {
         }
       ],
       temperature: 0.7,
-      max_tokens: 500
+      max_tokens: 500,
+      store: false,
     });
 
     return completion.choices[0]?.message?.content || generateFallbackDraft(params);
