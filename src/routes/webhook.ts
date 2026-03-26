@@ -4,8 +4,26 @@ import { processEmailWithAI } from '../services/ai-processor';
 
 const router = Router();
 
+// Webhook secret verification middleware
+function verifyWebhookSecret(req: any, res: any, next: any) {
+  const secret = req.headers['x-webhook-secret'] || req.query.secret;
+  const expectedSecret = process.env.WEBHOOK_SECRET;
+
+  if (!expectedSecret) {
+    console.error('WEBHOOK_SECRET not configured in environment');
+    return res.status(500).json({ error: 'Webhook not configured' });
+  }
+
+  if (!secret || secret !== expectedSecret) {
+    console.warn('Webhook rejected: invalid or missing secret');
+    return res.status(403).json({ error: 'Forbidden: invalid webhook secret' });
+  }
+
+  next();
+}
+
 // Webhook endpoint for AgentMail.to
-router.post('/webhook', async (req, res) => {
+router.post('/webhook', verifyWebhookSecret, async (req, res) => {
   console.log('📨 Webhook received from AgentMail:', req.body);
 
   try {

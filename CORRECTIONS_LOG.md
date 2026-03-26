@@ -69,3 +69,24 @@ Ajout de `store: false` sur les 3 appels `openai.chat.completions.create` pour e
 - `src/services/llm/plume.ts`
 
 ---
+
+## Correction 4 : Sécurisation des webhooks AgentMail
+
+**Statut : FAIT**
+
+### Ce qui a été fait :
+1. Ajouté un middleware `verifyWebhookSecret` sur la route `POST /webhook/webhook`
+2. Le middleware vérifie le header `x-webhook-secret` ou le query param `?secret=`
+3. Compare avec `process.env.WEBHOOK_SECRET`
+4. Retourne 403 si le secret est absent ou incorrect
+5. Retourne 500 si `WEBHOOK_SECRET` n'est pas configuré dans l'environnement
+
+### Actions manuelles requises :
+- Générer un secret aléatoire fort (ex: `openssl rand -hex 32`)
+- Ajouter `WEBHOOK_SECRET=<valeur>` dans le `.env` du serveur
+- Mettre à jour l'URL du webhook dans le dashboard AgentMail : ajouter le header `x-webhook-secret` ou le query param `?secret=<valeur>`
+
+### Fichiers modifiés :
+- `src/routes/webhook.ts`
+
+---
