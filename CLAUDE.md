@@ -1,6 +1,12 @@
 # DONNA LEGAL — Architecture & Pipeline MVP
 # Document de référence unique (à coller dans CLAUDE.md frontend + backend)
 # Dernière mise à jour : 26 mars 2026
+#
+# Changements récents :
+# - Gmail polling activé dans index.ts (startGmailPolling)
+# - 6 failles sécurité corrigées : toutes les routes utilisent req.user.id depuis le JWT
+# - 11 fichiers legacy supprimés (database.ts, redis.ts, models/, llm/, drafts, kpis, chat, schema.sql)
+# - Routes /api/drafts, /api/kpis, /api/chat retirées de index.ts
 
 ---
 
@@ -429,9 +435,9 @@ src/
 ## 10. ROADMAP
 
 ### Phase 1 — MVP stable (maintenant)
-- [ ] Corrections sécurité (6 routes)
-- [ ] Activer le polling Gmail dans index.ts
-- [ ] Supprimer le code legacy
+- [x] Corrections sécurité (6 routes) — FAIT 26 mars 2026
+- [x] Activer le polling Gmail dans index.ts — FAIT 26 mars 2026
+- [x] Supprimer le code legacy (11 fichiers) — FAIT 26 mars 2026
 - [ ] Ajouter les routes manquantes (PUT/DELETE dossiers, merge)
 - [ ] Aligner le frontend sur les routes réelles
 - [ ] Enrichir les mocks démo pour une expérience complète
