@@ -108,3 +108,30 @@ Le Dockerfile écrasait les fichiers JS compilés par `tsc` avec des fichiers JS
 7. Tous les appels OpenAI incluent `store: false`
 
 ---
+
+## Correction 6 : Tests de base
+
+**Statut : FAIT**
+
+### Ce qui a été fait :
+1. Installé jest, ts-jest, supertest et types associés
+2. Créé `jest.config.js` avec preset ts-jest
+3. Créé 3 suites de tests :
+   - `__tests__/auth.test.ts` (4 tests) : vérifie le middleware auth (pas de token → 401, token invalide → 401, token valide → next avec user)
+   - `__tests__/routes.test.ts` (8 tests) : vérifie que le healthcheck est public (200) et que toutes les routes /api/* retournent 401 sans auth
+   - `__tests__/webhook.test.ts` (6 tests) : vérifie la protection du webhook (pas de secret → 403, mauvais secret → 403, bon secret → accepté)
+4. Ajouté le script `"test": "jest --verbose"` dans package.json
+
+### Résultat des tests :
+```
+Test Suites: 3 passed, 3 total
+Tests:       18 passed, 18 total
+```
+
+### Fichiers ajoutés :
+- `jest.config.js`
+- `__tests__/auth.test.ts`
+- `__tests__/routes.test.ts`
+- `__tests__/webhook.test.ts`
+
+---
