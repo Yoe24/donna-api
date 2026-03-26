@@ -1,3 +1,31 @@
+# SESSION 26 MARS 2026 — RÉSUMÉ DES MODIFICATIONS
+
+## Backend (donna-api) — tout pushé sur master, Docker redéployé
+- Polling Gmail activé (startGmailPolling() dans index.ts) — emails arrivent en temps réel
+- 6 failles sécurité corrigées (req.query.user_id → req.user.id sur dossiers, config, briefs, emails, chat)
+- 11 fichiers legacy supprimés (database.ts, redis.ts, models/, llm/, drafts.ts, kpis.ts, chat.ts, schema.sql)
+- Routes /api/drafts, /api/kpis, /api/chat retirées
+
+## Frontend (donna-frontend) — tout pushé sur main, Vercel auto-deploy
+- Sidebar mode démo corrigée (useDossiers.ts)
+- Page dossier mode démo corrigée (DossierDetail.tsx)
+- 60 emails mock avec dates relatives (NOW - X heures/jours)
+- Stats briefing cohérentes par période (24h/7j/30j)
+- Emails cliquables individuellement dans le briefing → ouvre EmailDrawer
+- PJ cliquables dans dossier et drawer → Dialog avec résumé Donna
+- Fil d'actualité : onglets Tous/Clients/Pièces jointes/Autre + badge "Filtré par Donna"
+- Brouillon mock sur "Générer une réponse" dans EmailDrawer
+- "Relances" retiré des stats briefing
+
+## Bugs potentiels restants à vérifier
+- "Voir l'email complet" dans le drawer — vérifier que corps_original s'affiche bien (différent du résumé)
+- "Générer une réponse" — vérifier que le brouillon mock apparaît
+- PJ dans le drawer — vérifier que le Dialog s'ouvre avec resume_ia
+- Section "EN ATTENTE" dans le briefing — à clarifier (garder ou retirer ?)
+- Page Configuration (/configuration) — vérifier que les mocks sont en place
+
+---
+
 # DONNA LEGAL — Architecture & Pipeline MVP
 # Document de référence unique (à coller dans CLAUDE.md frontend + backend)
 # Dernière mise à jour : 26 mars 2026
