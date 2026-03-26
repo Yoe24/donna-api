@@ -90,3 +90,21 @@ Ajout de `store: false` sur les 3 appels `openai.chat.completions.create` pour e
 - `src/routes/webhook.ts`
 
 ---
+
+## Correction 5 : Synchronisation code source et code en production
+
+**Statut : FAIT**
+
+### Problème identifié :
+Le Dockerfile écrasait les fichiers JS compilés par `tsc` avec des fichiers JS custom. Le code en production contenait des routes et services absents du code source TypeScript.
+
+### Ce qui a été fait :
+1. Créé 8 fichiers TS pour les services manquants (agents/filter, agents/drafter, agents/context, agents/importer, attachment-processor, brief-generator, dossier-merger, gmail-poller)
+2. Créé 5 fichiers TS pour les routes manquantes (import, dossiers, config, briefs, chat)
+3. Réécrit `emails.ts` et `ai-processor.ts` pour correspondre à la version production
+4. Mis à jour `index.ts` avec toutes les routes + auth middleware
+5. Corrigé le Dockerfile : supprimé les patches post-build
+6. Ajouté `dist-custom/` au `.gitignore`
+7. Tous les appels OpenAI incluent `store: false`
+
+---
