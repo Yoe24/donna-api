@@ -6,7 +6,6 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-import webhookRoutes from './routes/webhook';
 import { testSupabaseConnection } from './config/supabase';
 import healthRoutes from './routes/health';
 import kpisRoutes from './routes/kpis';
@@ -50,7 +49,6 @@ io.on('connection', (socket) => {
 
 // Public routes (no auth)
 app.use('/health', healthRoutes);
-app.use('/webhook', webhookRoutes);
 
 // Protected routes (auth required)
 app.use('/api/kpis', authMiddleware, kpisRoutes);
@@ -82,7 +80,6 @@ async function startServer() {
     console.log(`Donna MVP server running on port ${PORT}`);
     console.log(`Socket.io ready for real-time updates`);
     console.log(`CORS enabled for: ${corsOptions.origin}`);
-    console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook/webhook`);
   });
 }
 

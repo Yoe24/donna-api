@@ -144,7 +144,22 @@ Tests:       18 passed, 18 total
 - `curl http://localhost:3000/health` → 200 OK
 - `curl http://localhost:3000/api/emails` → 401 Unauthorized (auth fonctionne)
 
-### Tests : 18/18 passent
+### Tests : 15/15 passent (webhook tests supprimés)
+
+---
+
+## Suppression d'AgentMail
+
+**Statut : FAIT**
+
+### Ce qui a été fait :
+1. Supprimé `src/routes/webhook.ts` (route webhook AgentMail complète)
+2. Supprimé `__tests__/webhook.test.ts` (tests du webhook)
+3. Retiré l'import et le montage de la route webhook dans `src/index.ts`
+4. Nettoyé `src/services/attachment-processor.ts` : supprimé le flow de téléchargement de PJ via l'API AgentMail, conservé uniquement le flow buffer (Gmail)
+5. Nettoyé `.env.example` : supprimé `WEBHOOK_SECRET`, `DEFAULT_USER_ID`
+
+---
 
 ### Actions manuelles restantes (URGENT)
 
@@ -155,18 +170,10 @@ Tests:       18 passed, 18 total
      - Le `.env` sur le serveur backend
      - Les variables d'environnement Vercel (frontend)
 
-2. **Configurer le webhook secret** :
-   - Générer un secret : `openssl rand -hex 32`
-   - Ajouter `WEBHOOK_SECRET=<valeur>` dans le `.env` du serveur
-   - Mettre à jour le dashboard AgentMail avec le header `x-webhook-secret`
-
-3. **Configurer les variables d'env frontend sur Vercel** :
+2. **Configurer les variables d'env frontend sur Vercel** :
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
    - `VITE_API_URL`
 
-4. **Pousser le frontend** :
-   - `cd /tmp/frontend-audit && git push`
-
-5. **Redéployer le container Docker** en production après mise à jour des clés :
+3. **Redéployer le container Docker** en production après mise à jour des clés :
    - `docker compose down && docker compose up -d`

@@ -176,45 +176,10 @@ export async function extractAttachmentsText(
 ): Promise<ExtractedAttachment[]> {
   if (!attachments || attachments.length === 0) return [];
 
-  // If a buffer is provided directly (Gmail flow), use it instead of fetching from AgentMail
-  if (bufferOverride) {
-    const results: ExtractedAttachment[] = [];
-    for (const att of attachments) {
-      const { filename, content_type } = att;
-      const isPdf =
-        (content_type && content_type.includes("pdf")) ||
-        (filename && filename.toLowerCase().endsWith(".pdf"));
-      const isWord =
-        (content_type &&
-          (content_type.includes("wordprocessingml") || content_type.includes("msword"))) ||
-        (filename &&
-          (filename.toLowerCase().endsWith(".docx") || filename.toLowerCase().endsWith(".doc")));
-      if (!isPdf && !isWord) continue;
-      try {
-        let text = "";
-        if (isPdf) text = await extractPdfText(bufferOverride);
-        else if (isWord) text = await extractWordText(bufferOverride);
-        if (text.trim().length > 0) {
-          results.push({ filename, text, buffer: bufferOverride });
-        }
-      } catch (e: any) {
-        console.error(`Error processing attachment ${filename}:`, e.message);
-      }
-    }
-    return results;
-  }
-
-  // AgentMail flow -- fetch from API
-  const apiKey = process.env.AGENTMAIL_API_KEY;
-  if (!apiKey) {
-    console.error("AGENTMAIL_API_KEY not set");
-    return [];
-  }
-
   const results: ExtractedAttachment[] = [];
 
   for (const att of attachments) {
-    const { attachment_id, filename, content_type } = att;
+    const { filename, content_type } = att;
     const isPdf =
       (content_type && content_type.includes("pdf")) ||
       (filename && filename.toLowerCase().endsWith(".pdf"));
@@ -223,37 +188,17 @@ export async function extractAttachmentsText(
         (content_type.includes("wordprocessingml") || content_type.includes("msword"))) ||
       (filename &&
         (filename.toLowerCase().endsWith(".docx") || filename.toLowerCase().endsWith(".doc")));
-
-    if (!isPdf && !isWord) {
-      console.log(`Skipping attachment (unsupported type): ${filename}`);
-      continue;
-    }
-
+    if (!isPdf && !isWord) continue;
     try {
-      console.log(`Fetching attachment: ${filename} (${attachment_id})`);
-      const url = `https://api.agentmail.to/v0/messages/${messageId}/attachments/${attachment_id}`;
-      const { statusCode, body } = await httpsGet(url, {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/octet-stream",
-      });
-
-      if (statusCode !== 200) {
-        console.error(`Failed to fetch attachment ${filename}: HTTP ${statusCode}`);
+      if (!bufferOverride) {
+        console.log(`Skipping attachment ${filename}: no buffer provided`);
         continue;
       }
-
       let text = "";
-      if (isPdf) {
-        text = await extractPdfText(body);
-      } else if (isWord) {
-        text = await extractWordText(body);
-      }
-
+      if (isPdf) text = await extractPdfText(bufferOverride);
+      else if (isWord) text = await extractWordText(bufferOverride);
       if (text.trim().length > 0) {
-        console.log(`Extracted ${text.length} chars from ${filename}`);
-        results.push({ filename, text, buffer: body });
-      } else {
-        console.warn(`Empty text extracted from ${filename}`);
+        results.push({ filename, text, buffer: bufferOverride });
       }
     } catch (e: any) {
       console.error(`Error processing attachment ${filename}:`, e.message);
