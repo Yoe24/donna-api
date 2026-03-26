@@ -8,15 +8,13 @@ dotenv.config();
 
 import { testSupabaseConnection } from './config/supabase';
 import healthRoutes from './routes/health';
-import kpisRoutes from './routes/kpis';
 import emailRoutes from './routes/emails';
-import { createDraftRoutes } from './routes/drafts';
 import importRoutes from './routes/import';
 import dossierRoutes from './routes/dossiers';
 import configRoutes from './routes/config';
 import briefRoutes from './routes/briefs';
-import chatRoutes from './routes/chat';
 import { authMiddleware } from './middleware/auth';
+import { startGmailPolling } from './services/gmail-poller';
 
 const app = express();
 const httpServer = createServer(app);
@@ -51,14 +49,11 @@ io.on('connection', (socket) => {
 app.use('/health', healthRoutes);
 
 // Protected routes (auth required)
-app.use('/api/kpis', authMiddleware, kpisRoutes);
 app.use('/api/emails', authMiddleware, emailRoutes);
-app.use('/api/drafts', authMiddleware, createDraftRoutes(io));
 app.use('/api/import', importRoutes);
 app.use('/api/dossiers', authMiddleware, dossierRoutes);
 app.use('/api/config', authMiddleware, configRoutes);
 app.use('/api/briefs', authMiddleware, briefRoutes);
-app.use('/api/chat', authMiddleware, chatRoutes);
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -80,6 +75,13 @@ async function startServer() {
     console.log(`Donna MVP server running on port ${PORT}`);
     console.log(`Socket.io ready for real-time updates`);
     console.log(`CORS enabled for: ${corsOptions.origin}`);
+
+    // Start Gmail polling for all users with refresh tokens
+    startGmailPolling().then(() => {
+      console.log('Gmail polling started');
+    }).catch((err) => {
+      console.error('Gmail polling failed to start:', err.message);
+    });
   });
 }
 

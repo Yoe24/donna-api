@@ -139,12 +139,16 @@ router.get('/stats', async (req: AuthenticatedRequest, res: Response) => {
 });
 
 // GET /api/emails/:id
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
+
     const { data, error } = await supabase
       .from('emails')
       .select('*')
       .eq('id', req.params.id)
+      .eq('user_id', userId)
       .single();
 
     if (error) return res.status(404).json({ error: error.message });
@@ -182,8 +186,11 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // POST /api/emails/:id/feedback
-router.post('/:id/feedback', async (req: Request, res: Response) => {
+router.post('/:id/feedback', async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
+
     const { action } = req.body;
     const statutMap: Record<string, string> = { parfait: 'valide', modifier: 'traite', erreur: 'erreur' };
     const newStatut = statutMap[action] || 'traite';
@@ -191,6 +198,7 @@ router.post('/:id/feedback', async (req: Request, res: Response) => {
       .from('emails')
       .update({ statut: newStatut, updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
+      .eq('user_id', userId)
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
@@ -201,12 +209,16 @@ router.post('/:id/feedback', async (req: Request, res: Response) => {
 });
 
 // POST /api/emails/:id/draft
-router.post('/:id/draft', async (req: Request, res: Response) => {
+router.post('/:id/draft', async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
+
     const { data: email, error: emailErr } = await supabase
       .from('emails')
       .select('*')
       .eq('id', req.params.id)
+      .eq('user_id', userId)
       .single();
     if (emailErr || !email) return res.status(404).json({ error: 'Email non trouvé' });
 

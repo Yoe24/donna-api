@@ -1,5 +1,6 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { supabase } from '../config/supabase';
+import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -28,10 +29,10 @@ function transformConfig(data: any): any {
 }
 
 // GET /api/config
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = req.query.user_id as string;
-    if (!userId) return res.status(400).json({ error: 'user_id requis' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
 
     const { data, error } = await supabase
       .from('configurations')
@@ -51,10 +52,10 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // PUT /api/config
-router.put('/', async (req: Request, res: Response) => {
+router.put('/', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = (req.query.user_id as string) || req.body.user_id;
-    if (!userId) return res.status(400).json({ error: 'user_id requis' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
 
     // SECURITE : ne jamais laisser le frontend ecrire refresh_token
     const body: any = { ...req.body, user_id: userId };

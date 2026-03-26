@@ -1,6 +1,7 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { generateBrief } from '../services/brief-generator';
+import { AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -199,11 +200,11 @@ async function transformBrief(brief: any): Promise<any> {
   return brief;
 }
 
-// GET /api/briefs/today?user_id=UUID
-router.get('/today', async (req: Request, res: Response) => {
+// GET /api/briefs/today
+router.get('/today', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = req.query.user_id as string;
-    if (!userId) return res.status(400).json({ error: 'user_id requis' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
 
     const today = new Date().toISOString().split('T')[0];
 
@@ -230,11 +231,11 @@ router.get('/today', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/briefs/generate?user_id=UUID&period_days=1
-router.post('/generate', async (req: Request, res: Response) => {
+// POST /api/briefs/generate
+router.post('/generate', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const userId = (req.query.user_id as string) || req.body.user_id;
-    if (!userId) return res.status(400).json({ error: 'user_id requis' });
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
 
     const periodDays = parseInt(req.query.period_days as string || req.body.period_days) || 1;
 
