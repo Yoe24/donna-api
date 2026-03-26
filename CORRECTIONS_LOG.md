@@ -135,3 +135,38 @@ Tests:       18 passed, 18 total
 - `__tests__/webhook.test.ts`
 
 ---
+
+## Vérifications finales
+
+### Build Docker : OK
+- `docker compose build` : compilation TypeScript réussie
+- `docker compose up -d` : container running
+- `curl http://localhost:3000/health` → 200 OK
+- `curl http://localhost:3000/api/emails` → 401 Unauthorized (auth fonctionne)
+
+### Tests : 18/18 passent
+
+### Actions manuelles restantes (URGENT)
+
+1. **Régénérer les clés Supabase** dans le dashboard Supabase :
+   - La clé `anon` a été exposée dans le repo GitHub public (frontend)
+   - La clé `service_role` a été exposée dans le backend et seed-emails.js
+   - Après régénération, mettre à jour :
+     - Le `.env` sur le serveur backend
+     - Les variables d'environnement Vercel (frontend)
+
+2. **Configurer le webhook secret** :
+   - Générer un secret : `openssl rand -hex 32`
+   - Ajouter `WEBHOOK_SECRET=<valeur>` dans le `.env` du serveur
+   - Mettre à jour le dashboard AgentMail avec le header `x-webhook-secret`
+
+3. **Configurer les variables d'env frontend sur Vercel** :
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+   - `VITE_API_URL`
+
+4. **Pousser le frontend** :
+   - `cd /tmp/frontend-audit && git push`
+
+5. **Redéployer le container Docker** en production après mise à jour des clés :
+   - `docker compose down && docker compose up -d`
