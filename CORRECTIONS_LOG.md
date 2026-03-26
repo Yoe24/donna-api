@@ -25,3 +25,29 @@ Date : 2026-03-26
 - `src/routes/webhook.ts`
 
 ---
+
+## Correction 2 : Suppression des secrets du code source
+
+**Statut : FAIT**
+
+### Ce qui a été fait :
+1. **Frontend** (`src/lib/supabase.ts`) : supprimé les valeurs en fallback (URL Supabase et anon key en dur). Le code lance maintenant une erreur si les variables d'env manquent
+2. **Frontend** : créé `.env.example` avec les variables requises
+3. **Frontend** : ajouté `.env`, `.env.local`, `.env.production` dans `.gitignore`
+4. **Backend** (`src/config/supabase.ts`) : supprimé la service_role key en dur. Le code lance maintenant une erreur si les variables d'env manquent
+5. **Backend** (`seed-emails.js`) : remplacé les credentials en dur par `process.env` via dotenv
+6. **Backend** : nettoyé `.env.example` pour ne plus contenir de vraies URLs/clés
+
+### Actions manuelles requises :
+- **URGENT** : Régénérer la clé anon Supabase dans le dashboard Supabase (elle a été exposée dans le repo GitHub public)
+- **URGENT** : Régénérer la clé service_role Supabase (exposée dans le code backend ET dans seed-emails.js)
+- Mettre à jour les variables d'environnement sur Vercel (frontend) avec les nouvelles clés
+- Mettre à jour le `.env` sur le serveur backend avec les nouvelles clés
+
+### Fichiers modifiés :
+- `src/config/supabase.ts` (backend)
+- `seed-emails.js` (backend)
+- `.env.example` (backend)
+- Frontend : `src/lib/supabase.ts`, `.env.example`, `.gitignore`
+
+---
