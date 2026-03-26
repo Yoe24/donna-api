@@ -9,12 +9,14 @@ router.post('/webhook', async (req, res) => {
   console.log('📨 Webhook received from AgentMail:', req.body);
 
   try {
-    const { 
+    const {
       subject,
       sender,
       body_text,
-      user_id = 'd8519048-397c-4434-9fd2-e4ca0fc327cb'
     } = req.body;
+
+    // user_id is determined server-side, never from client input
+    const user_id = process.env.DEFAULT_USER_ID || 'd8519048-397c-4434-9fd2-e4ca0fc327cb';
 
     if (!subject || !sender) {
       return res.status(400).json({ error: 'Missing required fields (subject, sender)' });

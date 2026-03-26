@@ -3,15 +3,16 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
-import webhookRoutes from './routes/webhook';
-import { testSupabaseConnection } from './config/supabase';
 
 dotenv.config();
 
+import webhookRoutes from './routes/webhook';
+import { testSupabaseConnection } from './config/supabase';
 import healthRoutes from './routes/health';
 import kpisRoutes from './routes/kpis';
 import { createEmailRoutes } from './routes/emails';
 import { createDraftRoutes } from './routes/drafts';
+import { authMiddleware } from './middleware/auth';
 
 const app = express();
 const httpServer = createServer(app);
@@ -41,14 +42,14 @@ io.on('connection', (socket) => {
   });
 });
 
-// Routes
+// Public routes (no auth)
 app.use('/health', healthRoutes);
-app.use('/api/kpis', kpisRoutes);
-app.use('/api/emails', createEmailRoutes(io));
-app.use('/api/drafts', createDraftRoutes(io));
-
-// NEW: AgentMail webhook route
 app.use('/webhook', webhookRoutes);
+
+// Protected routes (auth required)
+app.use('/api/kpis', authMiddleware, kpisRoutes);
+app.use('/api/emails', authMiddleware, createEmailRoutes(io));
+app.use('/api/drafts', authMiddleware, createDraftRoutes(io));
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
