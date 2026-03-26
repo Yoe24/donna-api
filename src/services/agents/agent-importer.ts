@@ -381,7 +381,7 @@ export async function importGmail({
               );
 
               // Extraire le texte
-              const extracted = await extractAttachmentsText(null, [
+              const extracted = await extractAttachmentsText(null as any, [
                 {
                   attachment_id: att.attachmentId,
                   filename: att.filename,

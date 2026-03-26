@@ -87,7 +87,7 @@ export async function processEmailWithAI(emailId: string, emailData: EmailData) 
         body: emailData.body || '',
         attachmentsText: emailData.attachmentsText || [],
       },
-      context,
+      context: context as any,
       config,
     });
     console.log('Résumé + recommandation générés, longueur:', draft.length);

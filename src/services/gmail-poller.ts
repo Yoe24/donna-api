@@ -224,6 +224,7 @@ async function checkNewEmailsForUser(userId: string, refreshToken: string, gmail
         });
 
         const payload = msgResponse.data.payload;
+        if (!payload) continue;
         const headers = payload.headers || [];
 
         const from = getHeader(headers, 'From');
