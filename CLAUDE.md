@@ -517,3 +517,34 @@ const { data } = await supabase.from('table').select('*').eq('user_id', userId);
 - Toujours `store: false`
 - GPT-4o pour les tâches complexes (résumés, brouillons, briefs)
 - GPT-4o-mini pour les tâches simples (filtrage, classification, résumé PJ)
+
+## Prochaine session — 28 mars 2026
+
+### PRIORITÉ 1 : Corrections sécurité (6 routes)
+Toutes les routes protégées doivent utiliser req.user.id (du middleware auth) au lieu de req.query.user_id :
+- routes/dossiers.ts : GET /api/dossiers, GET /api/dossiers/:id
+- routes/config.ts : GET /api/config, PUT /api/config
+- routes/briefs.ts : GET /api/briefs/today, POST /api/briefs/generate
+- routes/emails.ts : GET /:id, POST /:id/feedback, POST /:id/draft → ajouter .eq('user_id', req.user.id)
+
+### PRIORITÉ 2 : Nettoyage legacy
+Supprimer les fichiers morts : config/database.ts, config/redis.ts, models/index.ts, services/llm/facteur.ts, services/llm/plume.ts, services/llm/index.ts, routes/drafts.ts, routes/kpis.ts, routes/chat.ts, scripts/push-schema.ts, config/schema.sql
+Retirer les imports correspondants dans index.ts.
+
+### PRIORITÉ 3 : Activer le polling Gmail
+Dans index.ts, ajouter startGmailPolling() dans le callback app.listen().
+Vérifier que gmail-poller.ts gère les erreurs (token expiré, rate limit).
+
+### PRIORITÉ 4 : Test pipeline complet
+- Créer un compte Gmail de test
+- Connecter via OAuth
+- Vérifier l'import 90 jours
+- Vérifier : emails → filtre → classification → dossier → résumé → briefing
+- Vérifier : PJ → extraction → upload Supabase Storage → résumé IA
+
+### Architecture rappel
+- Frontend (React) sur Vercel : donna-legal.com
+- Backend (Node/Express/Docker) sur VPS : api.donna-legal.com
+- BDD : Supabase Cloud (PostgreSQL)
+- IA : OpenAI GPT-4o (résumés) + GPT-4o-mini (filtrage), tous avec store: false
+- Pipeline : Gmail polling 30s → filtre → dossier → résumé → classification
