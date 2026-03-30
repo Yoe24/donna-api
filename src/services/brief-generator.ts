@@ -105,13 +105,18 @@ function getExecPrompt(periodDays: number): string {
   }
 
   return (
-    "Tu es Donna, secrétaire juridique numérique. Tu fais un compte-rendu pour l'avocate.\n\n" +
+    "Tu es Donna, secrétaire juridique numérique. Tu fais un RÉSUMÉ CONCIS pour l'avocate.\n\n" +
     periodIntro +
     "\n\n" +
+    "FORMAT OBLIGATOIRE (4 lignes max) :\n" +
+    "- Ligne 1 : phrase d'intro avec le nombre d'emails et dossiers\n" +
+    "- Ligne 2-3 : les 2-3 faits les plus importants (deadlines proches, audiences, paiements)\n" +
+    "- Ligne 4 : nombre d'emails qui attendent une réponse\n\n" +
     "RÈGLES :\n" +
-    "- Pas de conseil, pas de priorités. Juste un rapport factuel de ce qui est arrivé\n" +
-    "- Mentionne les dossiers qui ont eu du mouvement\n" +
-    "- Mentionne les dates/deadlines identifiées dans les prochains jours\n" +
+    "- MAXIMUM 80 mots. C'est un résumé, pas un rapport détaillé\n" +
+    "- Pas de conseil, pas de priorités. Juste les faits\n" +
+    "- Mentionne UNIQUEMENT les dossiers urgents ou avec deadline proche\n" +
+    "- Ne détaille pas chaque dossier — l'avocate verra les détails dans la to-do list\n" +
     "- Ton INTERDIT : 'Commencez par contacter...', 'Préparez-vous...', 'Il faudrait...' — ça c'est du conseil, Donna ne fait pas ça\n\n" +
     "Réponds en texte brut, pas en JSON."
   );
@@ -157,7 +162,12 @@ export async function generateBrief(
   let needsResponseCount = 0;
   let deadlineSoonCount = 0;
 
-  for (const dossier of dossiers as Dossier[]) {
+  for (let dIdx = 0; dIdx < (dossiers as Dossier[]).length; dIdx++) {
+    const dossier = (dossiers as Dossier[])[dIdx];
+
+    // Delay between GPT calls to avoid rate limits (skip first)
+    if (dIdx > 0) await new Promise((r) => setTimeout(r, 500));
+
     const { data: emails, error: emailErr } = await supabase
       .from('emails')
       .select('id, expediteur, objet, resume, created_at, needs_response, classification')
@@ -201,31 +211,49 @@ export async function generateBrief(
       })
       .join('\n');
 
-    try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        store: false,
-        messages: [
-          { role: 'system', content: DOSSIER_PROMPT },
-          {
-            role: 'user',
-            content:
-              'Dossier : ' +
-              dossier.nom_client +
-              ' — ' +
-              (dossier.resume_situation || 'pas de résumé') +
-              '\n\nEmails récents :\n' +
-              emailsList,
-          },
-        ],
-        temperature: 0.2,
-        max_tokens: 500,
-        response_format: { type: 'json_object' },
-      });
+    const gptMessages = [
+      { role: 'system' as const, content: DOSSIER_PROMPT },
+      {
+        role: 'user' as const,
+        content:
+          'Dossier : ' +
+          dossier.nom_client +
+          ' — ' +
+          (dossier.resume_situation || 'pas de résumé') +
+          '\n\nEmails récents :\n' +
+          emailsList,
+      },
+    ];
 
-      const raw = (completion.choices[0].message.content || '').trim();
-      const parsed: DossierParsedResponse = JSON.parse(raw);
+    let parsed: DossierParsedResponse | null = null;
 
+    // Try up to 2 attempts (initial + 1 retry)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (attempt > 0) {
+          console.log('🔄 Retry ' + attempt + ' for ' + dossier.nom_client);
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4o',
+          store: false,
+          messages: gptMessages,
+          temperature: 0.2,
+          max_tokens: 500,
+          response_format: { type: 'json_object' },
+        });
+
+        const raw = (completion.choices[0].message.content || '').trim();
+        parsed = JSON.parse(raw);
+        break; // Success — exit retry loop
+      } catch (gptErr: unknown) {
+        const message = gptErr instanceof Error ? gptErr.message : String(gptErr);
+        console.error('❌ Brief GPT error for ' + dossier.nom_client + ' (attempt ' + (attempt + 1) + '):', message);
+      }
+    }
+
+    if (parsed) {
       const needsAttention = parsed.needs_immediate_attention || false;
       if (needsAttention) deadlineSoonCount++;
 
@@ -242,18 +270,41 @@ export async function generateBrief(
       console.log(
         '📋 Dossier ' + dossier.nom_client + ': ' + emails.length + ' emails | attention: ' + needsAttention,
       );
-    } catch (gptErr: unknown) {
-      const message = gptErr instanceof Error ? gptErr.message : String(gptErr);
-      console.error('❌ Brief GPT error for ' + dossier.nom_client + ':', message);
+    } else {
+      // Smart fallback: build summary from existing email data
+      const senders = [...new Set((emails as Email[]).map((e) => e.expediteur).filter(Boolean))] as string[];
+      const subjects = (emails as Email[]).slice(0, 3).map((e) => e.objet).filter(Boolean) as string[];
+      const emailRecus = (emails as Email[]).slice(0, 5).map(
+        (e) => (e.expediteur || '?') + ' — ' + (e.objet || '(sans objet)'),
+      );
+
+      let fallbackSummary: string;
+      if (senders.length > 0 && subjects.length > 0) {
+        fallbackSummary =
+          senders.join(', ') +
+          (senders.length > 1 ? ' ont' : ' a') +
+          ' envoyé ' +
+          emails.length +
+          ' email(s) concernant : ' +
+          subjects.join(', ') +
+          '.';
+      } else {
+        fallbackSummary = emails.length + ' email(s) reçu(s) à analyser.';
+      }
+
       dossierSummaries.push({
         dossier_id: dossier.id,
         nom: dossier.nom_client,
         new_emails_count: emails.length,
-        summary: emails.length + " email(s) reçu(s) — erreur lors de l'analyse.",
+        summary: fallbackSummary,
         dates_cles: [],
-        emails_recus: [],
+        emails_recus: emailRecus,
         needs_immediate_attention: false,
       });
+
+      console.log(
+        '⚠️ Dossier ' + dossier.nom_client + ': fallback summary used (' + emails.length + ' emails)',
+      );
     }
   }
 
@@ -294,7 +345,7 @@ export async function generateBrief(
           },
         ],
         temperature: 0.2,
-        max_tokens: 300,
+        max_tokens: 150,
       });
       executiveSummary = (execCompletion.choices[0].message.content || '').trim();
     } catch (execErr: unknown) {
