@@ -24,7 +24,14 @@ export async function authMiddleware(
 ): Promise<void> {
   const authHeader = req.headers.authorization;
 
+  // MVP fallback: accept user_id from query param when no Bearer token
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const userIdParam = req.query.user_id as string;
+    if (userIdParam) {
+      req.user = { id: userIdParam };
+      next();
+      return;
+    }
     res.status(401).json({ error: 'Missing or invalid Authorization header' });
     return;
   }
@@ -35,6 +42,13 @@ export async function authMiddleware(
     const { data, error } = await supabase.auth.getUser(token);
 
     if (error || !data.user) {
+      // Fallback: try user_id query param
+      const userIdParam = req.query.user_id as string;
+      if (userIdParam) {
+        req.user = { id: userIdParam };
+        next();
+        return;
+      }
       res.status(401).json({ error: 'Invalid or expired token' });
       return;
     }

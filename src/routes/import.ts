@@ -148,6 +148,15 @@ router.get('/callback', async (req: Request, res: Response) => {
         }
       }
 
+      // Mettre a jour nom_avocat si vide (pour les utilisateurs existants)
+      if (profile.name) {
+        const { data: cfg } = await supabase.from('configurations').select('nom_avocat').eq('user_id', userId).single();
+        if (cfg && !cfg.nom_avocat) {
+          await supabase.from('configurations').update({ nom_avocat: profile.name }).eq('user_id', userId);
+          console.log('nom_avocat mis a jour depuis profil Google:', profile.name);
+        }
+      }
+
       importState = { status: 'completed', processed: 0, total: 0, dossiers_created: 0, last_result: null };
 
       const redirectUrl = 'https://www.donna-legal.com/dashboard?user_id=' + userId;

@@ -315,10 +315,6 @@ export async function importGmail({
           }
         }
 
-        const emailDate = new Date(em.date);
-        const today = new Date();
-        const isToday = emailDate.toDateString() === today.toDateString();
-
         const { data: insertedEmail, error: eErr } = await supabase
           .from('emails')
           .insert({
@@ -327,8 +323,8 @@ export async function importGmail({
             objet: em.subject,
             resume: em.body ? em.body.substring(0, 200) : null,
             brouillon: null,
-            pipeline_step: isToday ? 'en_attente' : 'importe',
-            statut: isToday ? 'en_attente' : 'archive',
+            pipeline_step: 'en_attente',
+            statut: 'en_attente',
             dossier_id: dossierId,
             contexte_choisi: 'standard',
             metadata: { gmail_message_id: em.gmailId },
@@ -341,20 +337,6 @@ export async function importGmail({
           continue;
         }
         result.emails_imported++;
-
-        if (isToday && insertedEmail) {
-          console.log(`🤖 Email du jour détecté, lancement traitement IA: ${em.subject}`);
-          processEmailWithAI(insertedEmail.id, {
-            subject: em.subject,
-            sender: em.from,
-            body: em.body || '',
-            userId: uid,
-            attachments: [],
-            messageId: null,
-          }).catch((err: any) => {
-            console.error('❌ Erreur traitement email du jour:', err.message);
-          });
-        }
 
         // Traitement des PJ PDF/Word — avec upload Storage + résumé IA
         if (em.attachsMeta && em.attachsMeta.length > 0 && dossierId && insertedEmail) {
@@ -450,6 +432,40 @@ export async function importGmail({
       } catch (e: any) {
         console.error('❌ agent-importer: erreur style update:', e.message);
       }
+    }
+
+    // Post-import: lancer le pipeline IA sur tous les emails en 'en_attente'
+    console.log('🤖 agent-importer: lancement du pipeline IA sur les emails importés...');
+    const { data: pendingEmails } = await supabase
+      .from('emails')
+      .select('id, objet, expediteur, metadata')
+      .eq('user_id', uid)
+      .eq('pipeline_step', 'en_attente')
+      .order('created_at', { ascending: true });
+
+    if (pendingEmails && pendingEmails.length > 0) {
+      console.log(`🤖 ${pendingEmails.length} emails à traiter par le pipeline IA`);
+      for (let p = 0; p < pendingEmails.length; p++) {
+        const pe = pendingEmails[p];
+        try {
+          // Retrouver le body depuis les emails fetchés
+          const originalEmail = emails.find(e => e.gmailId === (pe.metadata?.gmail_message_id));
+          const body = originalEmail ? originalEmail.body || '' : '';
+          const sender = pe.expediteur || '';
+          console.log(`🤖 [${p + 1}/${pendingEmails.length}] Traitement IA: ${pe.objet}`);
+          await processEmailWithAI(pe.id, {
+            subject: pe.objet || '',
+            sender,
+            body,
+            userId: uid,
+            attachments: [],
+            messageId: null,
+          });
+        } catch (aiErr: any) {
+          console.error(`❌ Pipeline IA erreur pour ${pe.id}:`, aiErr.message);
+        }
+      }
+      console.log('✅ Pipeline IA post-import terminé');
     }
 
     if (onProgress) onProgress({ processed: total, total, dossiers_created: result.dossiers_created });

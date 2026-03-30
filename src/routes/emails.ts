@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import OpenAI from 'openai';
 import { AuthenticatedRequest } from '../middleware/auth';
+import { processEmailWithAI } from '../services/ai-processor';
 
 const router = Router();
 
@@ -330,6 +331,52 @@ router.post('/:id/draft', async (req: AuthenticatedRequest, res: Response) => {
     res.json({ draft });
   } catch (e: any) {
     console.error('Erreur génération brouillon:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/emails/reprocess — Retraite tous les emails bloqués en 'importe' ou 'en_attente'
+router.post('/reprocess', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Non authentifié' });
+
+    const { data: emails, error } = await supabase
+      .from('emails')
+      .select('id, objet, expediteur, metadata')
+      .eq('user_id', userId)
+      .in('pipeline_step', ['importe', 'en_attente'])
+      .order('created_at', { ascending: true });
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!emails || emails.length === 0) {
+      return res.json({ reprocessed: 0, message: 'Aucun email à retraiter' });
+    }
+
+    console.log(`🔄 Reprocess: ${emails.length} emails pour user ${userId}`);
+
+    let processed = 0;
+    let errors = 0;
+    for (const email of emails) {
+      try {
+        await processEmailWithAI(email.id, {
+          subject: email.objet || '',
+          sender: email.expediteur || '',
+          body: '',
+          userId,
+          attachments: [],
+          messageId: email.metadata?.gmail_message_id || null,
+        });
+        processed++;
+      } catch (e: any) {
+        console.error(`❌ Reprocess erreur ${email.id}:`, e.message);
+        errors++;
+      }
+    }
+
+    console.log(`✅ Reprocess terminé: ${processed} traités, ${errors} erreurs`);
+    res.json({ reprocessed: processed, errors, total: emails.length });
+  } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
 });

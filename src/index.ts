@@ -13,6 +13,7 @@ import importRoutes from './routes/import';
 import dossierRoutes from './routes/dossiers';
 import configRoutes from './routes/config';
 import briefRoutes from './routes/briefs';
+import accountRoutes from './routes/account';
 import { authMiddleware } from './middleware/auth';
 import { startGmailPolling } from './services/gmail-poller';
 
@@ -54,6 +55,7 @@ app.use('/api/import', importRoutes);
 app.use('/api/dossiers', authMiddleware, dossierRoutes);
 app.use('/api/config', authMiddleware, configRoutes);
 app.use('/api/briefs', authMiddleware, briefRoutes);
+app.use('/api/account', authMiddleware, accountRoutes);
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
