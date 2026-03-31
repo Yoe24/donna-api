@@ -249,6 +249,36 @@ router.get('/status', (req: Request, res: Response) => {
   res.json(importState);
 });
 
+// POST /api/import/simulate — Simulate import progress for testing cinematic
+router.post('/simulate', async (req: Request, res: Response) => {
+  const { user_id, total, dossiers_created, attachments_count } = req.body;
+  if (!user_id) return res.status(400).json({ error: 'user_id required' });
+
+  importState = { status: 'running', processed: 0, total: total || 110, dossiers_created: 0, attachments_count: 0 };
+
+  // Simulate progressive import over 8 seconds
+  const steps = 10;
+  const interval = 800;
+  let step = 0;
+
+  const timer = setInterval(() => {
+    step++;
+    importState.processed = Math.round((step / steps) * (total || 110));
+    importState.dossiers_created = Math.min(Math.round((step / steps) * (dossiers_created || 8)), dossiers_created || 8);
+    importState.attachments_count = Math.min(Math.round((step / steps) * (attachments_count || 36)), attachments_count || 36);
+
+    if (step >= steps) {
+      clearInterval(timer);
+      importState.status = 'done';
+      importState.progress = 100;
+    } else {
+      importState.progress = Math.round((step / steps) * 100);
+    }
+  }, interval);
+
+  res.json({ message: 'Simulation started', redirect: `/onboarding?import=started&user_id=${user_id}` });
+});
+
 // GET /api/import/demo-login -- Temporary demo route, bypasses OAuth
 router.get('/demo-login', (req: Request, res: Response) => {
   const demoUserId = '9082c497-0efe-401f-978a-e43cc149ff57';
