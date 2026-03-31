@@ -200,7 +200,7 @@ async function checkNewEmailsForUser(userId: string, refreshToken: string, gmail
     const listResponse = await gmail.users.messages.list({
       userId: 'me',
       q: 'after:' + epochSeconds + ' is:inbox',
-      maxResults: 10
+      maxResults: 50
     });
 
     const messages: any[] = (listResponse.data && listResponse.data.messages) || [];
