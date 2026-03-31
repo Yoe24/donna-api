@@ -17,7 +17,9 @@ function transformConfig(data: any): any {
     profil_style: data.profil_style || '',
     formule_appel: data.formule_appel || 'cher_maitre',
     formule_politesse: data.formule_politesse || 'cordialement',
-    ton_reponse: data.ton_reponse || 50,
+    ton_reponse: typeof data.ton_reponse === 'number'
+      ? (data.ton_reponse <= 30 ? 'formel' : data.ton_reponse >= 70 ? 'conversationnel' : 'equilibre')
+      : (data.ton_reponse || 'equilibre'),
     niveau_concision: data.niveau_concision || 50,
     email_exemples: Array.isArray(data.email_exemples) ? data.email_exemples : [],
     sources_favorites: Array.isArray(data.sources_favorites) ? data.sources_favorites : [],
@@ -60,6 +62,12 @@ router.put('/', async (req: AuthenticatedRequest, res: Response) => {
     // SECURITE : ne jamais laisser le frontend ecrire refresh_token
     const body: any = { ...req.body, user_id: userId };
     delete body.refresh_token;
+
+    // ton_reponse: frontend sends string, DB expects integer
+    if (typeof body.ton_reponse === 'string') {
+      const tonMap: Record<string, number> = { formel: 20, equilibre: 50, conversationnel: 80 };
+      body.ton_reponse = tonMap[body.ton_reponse] ?? 50;
+    }
 
     // Use update (row exists after onboarding) with insert fallback
     const { data: existing } = await supabase
