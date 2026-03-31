@@ -61,11 +61,32 @@ router.put('/', async (req: AuthenticatedRequest, res: Response) => {
     const body: any = { ...req.body, user_id: userId };
     delete body.refresh_token;
 
-    const { data, error } = await supabase
+    // Use update (row exists after onboarding) with insert fallback
+    const { data: existing } = await supabase
       .from('configurations')
-      .upsert(body, { onConflict: 'user_id' })
-      .select()
+      .select('user_id')
+      .eq('user_id', userId)
       .single();
+
+    let data, error;
+    if (existing) {
+      const result = await supabase
+        .from('configurations')
+        .update(body)
+        .eq('user_id', userId)
+        .select()
+        .single();
+      data = result.data;
+      error = result.error;
+    } else {
+      const result = await supabase
+        .from('configurations')
+        .insert(body)
+        .select()
+        .single();
+      data = result.data;
+      error = result.error;
+    }
 
     if (error) {
       console.error('PUT /api/config:', error.message);
