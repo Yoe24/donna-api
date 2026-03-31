@@ -157,10 +157,42 @@ router.get('/callback', async (req: Request, res: Response) => {
         }
       }
 
-      importState = { status: 'completed', processed: 0, total: 0, dossiers_created: 0, last_result: null };
+      // Check if user has 0 emails — trigger import if so (fresh start)
+      const { data: emailCheck } = await supabase.from('emails').select('id').eq('user_id', userId).limit(1);
+      if (!emailCheck || emailCheck.length === 0) {
+        console.log('Utilisateur existant mais 0 emails — lancement import complet');
+        importState = { status: 'running', processed: 0, total: 0, dossiers_created: 0, attachments_count: 0, last_result: null };
 
-      const redirectUrl = 'https://www.donna-legal.com/dashboard?user_id=' + userId;
-      res.redirect(redirectUrl);
+        // Reset gmail_last_check for full import
+        await supabase.from('configurations').update({ gmail_last_check: new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString() }).eq('user_id', userId);
+
+        const { importGmail } = require('../services/agents/agent-importer');
+        importGmail({
+          oauthToken: tokens.access_token || '',
+          userId,
+          onProgress: (progress: any) => {
+            importState.processed = progress.processed;
+            importState.total = progress.total;
+            importState.dossiers_created = progress.dossiers_created;
+            importState.attachments_count = progress.attachments_count || 0;
+          },
+        }).then((result: any) => {
+          importState.status = 'done';
+          importState.last_result = result;
+          importState.progress = 100;
+          console.log('Import termine:', JSON.stringify(result));
+        }).catch((err: any) => {
+          importState.status = 'error';
+          console.error('Import error:', err.message);
+        });
+
+        const redirectUrl = 'https://www.donna-legal.com/onboarding?import=started&user_id=' + userId;
+        res.redirect(redirectUrl);
+      } else {
+        importState = { status: 'completed', processed: 0, total: 0, dossiers_created: 0, last_result: null };
+        const redirectUrl = 'https://www.donna-legal.com/dashboard?user_id=' + userId;
+        res.redirect(redirectUrl);
+      }
     } else {
       // Premiere connexion : sauvegarder le refresh_token et lancer l'import
 
