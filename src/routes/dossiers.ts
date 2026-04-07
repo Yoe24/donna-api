@@ -23,14 +23,22 @@ function transformDossier(dossier: any, emailCount: number, documentCount: numbe
     id: dossier.id,
     user_id: dossier.user_id,
     name: dossier.nom_client || '',
+    nom_client: dossier.nom_client || '',
     email_client: dossier.email_client || '',
     domain: dossier.domaine || '',
+    domaine: dossier.domaine || '',
     summary: dossier.resume_situation || '',
+    resume_situation: dossier.resume_situation || '',
     status: dossier.statut || 'actif',
+    statut: dossier.statut || 'actif',
     last_exchange: dossier.dernier_echange_date || null,
     created_at: dossier.created_at,
     email_count: emailCount || 0,
     document_count: documentCount || 0,
+    // Enrichissement dossier (Étape B)
+    echeances: dossier.echeances || [],
+    resume_pj: dossier.resume_pj || null,
+    last_summary_update: dossier.last_summary_update || null,
   };
 }
 
@@ -125,6 +133,8 @@ router.get('/:id', async (req: AuthenticatedRequest, res: Response) => {
           from_email: parsed.from_email,
           subject: e.objet || '',
           summary: e.resume || '',
+          contenu: e.contenu || '',
+          brouillon: e.brouillon || null,
           date: e.created_at || '',
           pipeline_step: e.pipeline_step || 'en_attente',
           statut: e.statut || 'en_attente',

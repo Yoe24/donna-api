@@ -4,6 +4,7 @@ import { importGmail, importFromProvider } from '../services/agents/agent-import
 import { generateBrief } from '../services/brief-generator';
 import { mergeDossiers } from '../services/dossier-merger';
 import { sendPostOnboardingBriefing } from '../services/briefing-cron';
+import { enrichDossier } from '../services/dossier-enricher';
 import { supabase } from '../config/supabase';
 import { randomBytes } from 'crypto';
 import { getOutlookAuthUrl, exchangeOutlookCode, OutlookProvider } from '../services/mail/outlook-provider';
@@ -22,6 +23,32 @@ function createOAuthClient(): any {
 
 // Etat en memoire
 let importState: any = { status: 'idle', processed: 0, total: 0, dossiers_created: 0, last_result: null };
+
+/**
+ * Enrichit tous les dossiers d'un user après l'import + merge.
+ * En série (await) pour éviter de surcharger GPT en parallèle.
+ */
+async function enrichAllDossiers(userId: string): Promise<void> {
+  try {
+    const { data: dossiers, error } = await supabase
+      .from('dossiers')
+      .select('id')
+      .eq('user_id', userId);
+
+    if (error || !dossiers || dossiers.length === 0) {
+      console.log(`[enrichAllDossiers] Aucun dossier à enrichir pour user ${userId.substring(0, 8)}`);
+      return;
+    }
+
+    console.log(`[enrichAllDossiers] Enrichissement de ${dossiers.length} dossiers pour user ${userId.substring(0, 8)}...`);
+    for (const dossier of dossiers) {
+      await enrichDossier(dossier.id);
+    }
+    console.log(`[enrichAllDossiers] Terminé pour user ${userId.substring(0, 8)}`);
+  } catch (e: any) {
+    console.error('[enrichAllDossiers] Erreur:', e.message);
+  }
+}
 
 // GET /api/import/gmail/auth
 router.get('/gmail/auth', (req: Request, res: Response) => {
@@ -195,6 +222,12 @@ router.get('/callback', async (req: Request, res: Response) => {
           } catch (mergeErr: any) {
             console.error('Fusion dossiers erreur:', mergeErr.message);
           }
+          // Enrichir tous les dossiers (écheances + résumé PJ + résumé situation)
+          try {
+            await enrichAllDossiers(userId!);
+          } catch (enrichErr: any) {
+            console.error('Enrichissement dossiers erreur:', enrichErr.message);
+          }
           // Generer le brief post-import
           try {
             console.log('Generation du brief post-import pour', userId);
@@ -278,6 +311,12 @@ router.get('/callback', async (req: Request, res: Response) => {
           console.log('Fusion des dossiers terminee');
         } catch (mergeErr: any) {
           console.error('Fusion dossiers erreur:', mergeErr.message);
+        }
+        // Enrichir tous les dossiers (écheances + résumé PJ + résumé situation)
+        try {
+          await enrichAllDossiers(userId!);
+        } catch (enrichErr: any) {
+          console.error('Enrichissement dossiers erreur:', enrichErr.message);
         }
         // Generer le premier brief (24h — briefing du jour)
         try {
@@ -487,6 +526,12 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
         console.log('Fusion des dossiers Outlook terminée');
       } catch (mergeErr: any) {
         console.error('Outlook: fusion dossiers erreur:', mergeErr.message);
+      }
+      // Enrichir tous les dossiers (écheances + résumé PJ + résumé situation)
+      try {
+        await enrichAllDossiers(userId!);
+      } catch (enrichErr: any) {
+        console.error('Outlook: enrichissement dossiers erreur:', enrichErr.message);
       }
       try {
         await generateBrief(userId!, 1);

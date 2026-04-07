@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase';
 import { filterEmail } from './agents/agent-filter';
 import { getEmailContext } from './agents/agent-context';
 import { draftResponse } from './agents/agent-drafter';
+import { enrichDossier } from './dossier-enricher';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -66,6 +67,13 @@ export async function processEmailWithAI(emailId: string, emailData: EmailData) 
     const senderEmail = extractEmailAddress(emailData.sender);
     const senderName = extractSenderName(emailData.sender);
     const dossierId = await archiveEmail(emailId, senderEmail, senderName, emailData.userId);
+
+    // Fire-and-forget: enrich dossier after archiving (non-blocking)
+    if (dossierId) {
+      enrichDossier(dossierId).catch((err: any) =>
+        console.error('[ai-processor] enrichDossier fire-and-forget error:', err.message)
+      );
+    }
 
     // Step 3: Recherche de contexte (agent-context)
     await updatePipelineStep(emailId, 'recherche_contexte');
