@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { google } from 'googleapis';
-import { importGmail } from '../services/agents/agent-importer';
+import { importGmail, importFromProvider } from '../services/agents/agent-importer';
 import { generateBrief } from '../services/brief-generator';
 import { mergeDossiers } from '../services/dossier-merger';
 import { sendPostOnboardingBriefing } from '../services/briefing-cron';
 import { supabase } from '../config/supabase';
 import { randomBytes } from 'crypto';
+import { getOutlookAuthUrl, exchangeOutlookCode, OutlookProvider } from '../services/mail/outlook-provider';
 
 const router = Router();
 
@@ -351,6 +352,167 @@ router.get('/demo-login', (req: Request, res: Response) => {
   console.log('Demo login -- redirecting to dashboard with user_id:', demoUserId);
   const redirectUrl = 'https://www.donna-legal.com/dashboard?user_id=' + demoUserId;
   res.redirect(redirectUrl);
+});
+
+// ─── Outlook OAuth routes ─────────────────────────────────────────────────────
+
+// GET /api/import/outlook/auth — returns {auth_url} for Microsoft OAuth flow
+router.get('/outlook/auth', async (req: Request, res: Response) => {
+  try {
+    const authUrl = await getOutlookAuthUrl();
+    res.json({ auth_url: authUrl });
+  } catch (err: any) {
+    console.error('Outlook auth URL error:', err.message);
+    res.status(500).json({ error: 'Impossible de générer l\'URL Outlook', details: err.message });
+  }
+});
+
+// GET /api/import/outlook/callback — exchanges code, stores token, launches import
+router.get('/outlook/callback', async (req: Request, res: Response) => {
+  const code = req.query.code as string;
+  if (!code) {
+    return res.status(400).json({ error: 'code manquant' });
+  }
+  if (importState.status === 'running') {
+    return res.status(409).json({ error: 'Import deja en cours' });
+  }
+
+  try {
+    // 1. Exchange code for tokens
+    const { accessToken, refreshToken, email, name } = await exchangeOutlookCode(code);
+
+    if (!refreshToken) {
+      console.warn('Outlook callback: pas de refresh_token retourné par MSAL');
+    }
+
+    // 2. Find or create Supabase user
+    let userId: string | null = null;
+    try {
+      const { data: listData } = await supabase.auth.admin.listUsers({ perPage: 1000 });
+      const existingUser = ((listData as any)?.users || []).find((u: any) => u.email === email);
+
+      if (existingUser) {
+        userId = existingUser.id;
+        console.log('Outlook: utilisateur Supabase existant:', userId);
+      } else {
+        const tempPassword = randomBytes(32).toString('hex');
+        const { data: newUserData, error: createErr } = await supabase.auth.admin.createUser({
+          email,
+          password: tempPassword,
+          email_confirm: true,
+          user_metadata: { full_name: name || '' },
+        });
+        if (createErr) {
+          console.error('Outlook: erreur création utilisateur:', createErr.message);
+        } else {
+          userId = (newUserData as any).user.id;
+          console.log('Outlook: utilisateur Supabase créé:', userId, email);
+        }
+      }
+    } catch (authErr: any) {
+      console.error('Outlook: erreur auth Supabase:', authErr.message);
+    }
+
+    if (!userId) {
+      return res.status(500).json({ error: 'Impossible de créer ou trouver l\'utilisateur' });
+    }
+
+    // 3. Upsert configuration with Outlook tokens
+    const { data: existingConfig } = await supabase
+      .from('configurations')
+      .select('id')
+      .eq('user_id', userId)
+      .single();
+
+    if (!existingConfig) {
+      const { error: configErr } = await supabase
+        .from('configurations')
+        .insert({
+          user_id: userId,
+          nom_avocat: name || '',
+          provider: 'outlook',
+          outlook_refresh_token: refreshToken || null,
+          outlook_needs_reconnect: false,
+        });
+      if (configErr) {
+        console.error('Outlook: erreur création config:', configErr.message);
+      }
+    } else {
+      await supabase
+        .from('configurations')
+        .update({
+          provider: 'outlook',
+          outlook_refresh_token: refreshToken || null,
+          outlook_needs_reconnect: false,
+        })
+        .eq('user_id', userId);
+    }
+
+    // 4. Generate magic link for frontend session
+    let sessionToken = '';
+    try {
+      const { data: linkData, error: linkErr } = await supabase.auth.admin.generateLink({
+        type: 'magiclink',
+        email,
+      });
+      if (linkErr) {
+        console.error('Outlook: erreur magic link:', linkErr.message);
+      } else if (linkData && (linkData as any).properties) {
+        sessionToken = (linkData as any).properties.hashed_token || '';
+      }
+    } catch (linkGenErr: any) {
+      console.error('Outlook: erreur magic link (non bloquante):', linkGenErr.message);
+    }
+
+    // 5. Launch import in background using OutlookProvider
+    importState = { status: 'running', processed: 0, total: 0, dossiers_created: 0, attachments_count: 0, last_result: null };
+    console.log('Outlook import lancé pour', email, '(user:', userId, ')');
+
+    const outlookProvider = new OutlookProvider({
+      refreshToken: refreshToken || '',
+      userId,
+    });
+
+    importFromProvider(outlookProvider, userId, (progress: any) => {
+      importState.processed = progress.processed;
+      importState.total = progress.total;
+      importState.dossiers_created = progress.dossiers_created;
+      importState.attachments_count = progress.attachments_count || 0;
+    }).then(async (result: any) => {
+      importState.status = 'done';
+      importState.last_result = result;
+      console.log('Outlook import terminé:', result);
+      try {
+        await mergeDossiers(userId!);
+        console.log('Fusion des dossiers Outlook terminée');
+      } catch (mergeErr: any) {
+        console.error('Outlook: fusion dossiers erreur:', mergeErr.message);
+      }
+      try {
+        await generateBrief(userId!, 1);
+      } catch (briefErr: any) {
+        console.error('Outlook: brief erreur:', briefErr.message);
+      }
+      try {
+        await sendPostOnboardingBriefing(userId!);
+      } catch (emailErr: any) {
+        console.error('Outlook: email briefing erreur:', emailErr.message);
+      }
+    }).catch((err: any) => {
+      importState.status = 'error';
+      console.error('Outlook import erreur:', err.message);
+    });
+
+    // 6. Redirect to frontend
+    let redirectUrl = 'https://www.donna-legal.com/onboarding?import=started&user_id=' + userId;
+    if (sessionToken) {
+      redirectUrl += '&token=' + encodeURIComponent(sessionToken);
+    }
+    res.redirect(redirectUrl);
+  } catch (err: any) {
+    console.error('Outlook callback erreur:', err.message);
+    res.status(500).json({ error: 'Echec échange token Outlook', details: err.message });
+  }
 });
 
 export default router;

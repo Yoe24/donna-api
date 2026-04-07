@@ -1,139 +1,66 @@
-import { google } from 'googleapis';
+// src/services/gmail-poller.ts
+// Mail poller — handles both Gmail and Outlook providers.
+// Filename kept as gmail-poller.ts to avoid changing src/index.ts import.
+// Exported function: startGmailPolling (alias for startMailPolling for backward compat).
+
 import { supabase } from '../config/supabase';
 import { processEmailWithAI } from './ai-processor';
 import { uploadToStorage, generateAttachmentSummary } from './attachment-processor';
+import { GmailProvider } from './mail/gmail-provider';
+import { OutlookProvider } from './mail/outlook-provider';
+import { TokenInvalidError, MailProvider } from './mail/types';
 
 const POLL_INTERVAL = 30000; // 30 secondes
 
 let pdf_parse: any;
 let mammoth: any;
-try { pdf_parse = require('pdf-parse'); } catch (e) { /* not available */ }
-try { mammoth = require('mammoth'); } catch (e) { /* not available */ }
+try { pdf_parse = require('pdf-parse'); } catch { /* not available */ }
+try { mammoth = require('mammoth'); } catch { /* not available */ }
 
 let pollingTimer: ReturnType<typeof setInterval> | null = null;
-
-interface AttachmentPart {
-  filename: string;
-  mimeType: string;
-  attachmentId: string;
-  size: number;
-}
 
 interface ExtractedText {
   filename: string;
   text: string;
 }
 
-function createOAuthClient(): any {
-  return new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET
-  );
-}
+// ─── Attachment processing (provider-agnostic) ───────────────────────────────
 
-function extractBodyFromPayload(payload: any): string {
-  if (payload.body && payload.body.data) {
-    return Buffer.from(payload.body.data, 'base64url').toString('utf8');
-  }
-  if (payload.parts) {
-    for (const part of payload.parts) {
-      if (part.mimeType === 'text/plain' && part.body && part.body.data) {
-        return Buffer.from(part.body.data, 'base64url').toString('utf8');
-      }
-      if (part.parts) {
-        const nested = extractBodyFromPayload(part);
-        if (nested) return nested;
-      }
-    }
-    for (const part of payload.parts) {
-      if (part.mimeType === 'text/html' && part.body && part.body.data) {
-        const html = Buffer.from(part.body.data, 'base64url').toString('utf8');
-        return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      }
-      if (part.parts) {
-        for (const sub of part.parts) {
-          if (sub.mimeType === 'text/html' && sub.body && sub.body.data) {
-            const html = Buffer.from(sub.body.data, 'base64url').toString('utf8');
-            return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-          }
-        }
-      }
-    }
-  }
-  return '';
-}
-
-function getHeader(headers: any[] | undefined, name: string): string {
-  if (!headers) return '';
-  const h = headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase());
-  return h ? h.value : '';
-}
-
-function collectAttachmentParts(payload: any): AttachmentPart[] {
-  let parts: AttachmentPart[] = [];
-  if (payload.parts) {
-    for (const part of payload.parts) {
-      if (part.filename && part.filename.length > 0 && part.body && part.body.attachmentId) {
-        parts.push({
-          filename: part.filename,
-          mimeType: part.mimeType || '',
-          attachmentId: part.body.attachmentId,
-          size: part.body.size || 0
-        });
-      }
-      if (part.parts) {
-        const nested = collectAttachmentParts(part);
-        parts = parts.concat(nested);
-      }
-    }
-  }
-  return parts;
-}
-
-async function processGmailAttachments(
-  gmail: any,
-  gmailMsgId: string,
-  attachmentParts: AttachmentPart[],
+async function processProviderAttachments(
+  provider: MailProvider,
+  providerMsgId: string,
+  attachments: Array<{ id: string; filename: string; mimeType: string; size: number }>,
   dossierId: string | null,
   emailId: string | null,
-  userId: string | null
+  userId: string
 ): Promise<ExtractedText[]> {
   const extractedTexts: ExtractedText[] = [];
-  for (const att of attachmentParts) {
+  for (const att of attachments) {
     try {
       const ct = (att.mimeType || '').toLowerCase();
-      const isPdf = ct.includes('pdf') || (att.filename && att.filename.toLowerCase().endsWith('.pdf'));
+      const isPdf = ct.includes('pdf') || att.filename.toLowerCase().endsWith('.pdf');
       const isWord = ct.includes('wordprocessingml') || ct.includes('msword')
-        || (att.filename && (att.filename.toLowerCase().endsWith('.docx') || att.filename.toLowerCase().endsWith('.doc')));
+        || att.filename.toLowerCase().endsWith('.docx')
+        || att.filename.toLowerCase().endsWith('.doc');
 
       if (!isPdf && !isWord) continue;
 
-      const attResponse = await gmail.users.messages.attachments.get({
-        userId: 'me',
-        messageId: gmailMsgId,
-        id: att.attachmentId
-      });
-
-      if (!attResponse.data || !attResponse.data.data) continue;
-
-      const buffer = Buffer.from(attResponse.data.data, 'base64url');
+      const buffer = await provider.getAttachment(providerMsgId, att.id);
       let extractedText = '';
 
       if (isPdf && pdf_parse) {
         const pdfData = await pdf_parse(buffer);
         extractedText = (pdfData.text || '').substring(0, 10000);
       } else if (isWord && mammoth) {
-        const result = await mammoth.extractRawText({ buffer: buffer });
+        const result = await mammoth.extractRawText({ buffer });
         extractedText = (result.value || '').substring(0, 10000);
       }
 
-      // Upload vers Supabase Storage
       let storageUrl: string | null = null;
       if (dossierId && userId) {
         storageUrl = await uploadToStorage(buffer, userId, dossierId, att.filename);
       }
 
-      // Generer resume IA
       let resumeIa: string | null = null;
       if (extractedText) {
         resumeIa = await generateAttachmentSummary(extractedText, att.filename);
@@ -148,12 +75,10 @@ async function processGmailAttachments(
           contenu_extrait: extractedText || null,
           date_reception: new Date().toISOString(),
           storage_url: storageUrl || null,
-          resume_ia: resumeIa || null
+          resume_ia: resumeIa || null,
         };
-        const { error: docInsertErr } = await supabase
-          .from('dossier_documents')
-          .insert(docRow);
-        if (docInsertErr && docInsertErr.message) {
+        const { error: docInsertErr } = await supabase.from('dossier_documents').insert(docRow);
+        if (docInsertErr?.message) {
           if (docInsertErr.message.includes('email_id')) delete docRow.email_id;
           if (docInsertErr.message.includes('storage_url')) delete docRow.storage_url;
           if (docInsertErr.message.includes('resume_ia')) delete docRow.resume_ia;
@@ -163,200 +88,194 @@ async function processGmailAttachments(
 
       if (extractedText) {
         extractedTexts.push({ filename: att.filename, text: extractedText });
-        console.log('📎 PJ Gmail extraite : ' + att.filename + ' — ' + extractedText.length + ' car.' + (storageUrl ? ' (stocké)' : '') + (resumeIa ? ' (résumé)' : ''));
+        console.log(`📎 PJ ${provider.name} extraite : ${att.filename} — ${extractedText.length} car.` +
+          (storageUrl ? ' (stocké)' : '') + (resumeIa ? ' (résumé)' : ''));
       }
     } catch (err: any) {
-      console.error('❌ Erreur PJ Gmail ' + (att.filename || 'inconnue') + ' :', err.message);
+      console.error(`❌ Erreur PJ ${provider.name} ${att.filename || 'inconnue'} :`, err.message);
     }
   }
   return extractedTexts;
 }
 
-async function checkNewEmailsForUser(userId: string, refreshToken: string, gmailLastCheck: string | null): Promise<void> {
-  try {
-    const oauth2Client = createOAuthClient();
-    oauth2Client.setCredentials({ refresh_token: refreshToken });
+// ─── Per-user polling ─────────────────────────────────────────────────────────
 
-    // On laisse les erreurs (401, invalid_grant, etc) remonter au catch externe
-    // qui gère uniformément la révocation du refresh_token et le flag
-    // gmail_needs_reconnect.
-    await oauth2Client.getAccessToken();
+async function checkNewEmailsForUser(
+  userId: string,
+  provider: MailProvider,
+  lastCheck: string | null,
+  providerName: 'gmail' | 'outlook'
+): Promise<void> {
+  const metadataKey = providerName === 'gmail' ? 'gmail_message_id' : 'outlook_message_id';
+  const lastCheckField = providerName === 'gmail' ? 'gmail_last_check' : 'outlook_last_check';
 
-    const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+  let sinceDate: Date;
+  if (lastCheck) {
+    sinceDate = new Date(lastCheck);
+  } else {
+    sinceDate = new Date(Date.now() - 3600000);
+  }
 
-    let sinceDate: Date;
-    if (gmailLastCheck) {
-      sinceDate = new Date(gmailLastCheck);
-    } else {
-      sinceDate = new Date(Date.now() - 3600000);
-    }
-    const epochSeconds = Math.floor(sinceDate.getTime() / 1000);
+  let newCount = 0;
 
-    const listResponse = await gmail.users.messages.list({
-      userId: 'me',
-      q: 'after:' + epochSeconds + ' is:inbox',
-      maxResults: 50
-    });
+  for await (const rawMsg of provider.listMessagesSince(sinceDate, 50)) {
+    try {
+      const { data: existing } = await supabase
+        .from('emails')
+        .select('id')
+        .eq('user_id', userId)
+        .contains('metadata', { [metadataKey]: rawMsg.id })
+        .limit(1);
 
-    const messages: any[] = (listResponse.data && listResponse.data.messages) || [];
-    let newCount = 0;
+      if (existing && existing.length > 0) continue;
 
-    for (const msgItem of messages) {
-      try {
-        const { data: existing } = await supabase
-          .from('emails')
-          .select('id')
-          .eq('user_id', userId)
-          .filter('metadata->>gmail_message_id', 'eq', msgItem.id)
-          .limit(1);
+      const full = await provider.getFullMessage(rawMsg.id);
 
-        if (existing && existing.length > 0) continue;
+      const { data: email, error: insertError } = await supabase
+        .from('emails')
+        .insert({
+          user_id: userId,
+          expediteur: full.from,
+          objet: full.subject,
+          resume: null,
+          brouillon: null,
+          pipeline_step: 'en_attente',
+          statut: 'en_attente',
+          contexte_choisi: 'standard',
+          metadata: { [metadataKey]: rawMsg.id },
+        })
+        .select()
+        .single();
 
-        const msgResponse = await gmail.users.messages.get({
-          userId: 'me',
-          id: msgItem.id,
-          format: 'full'
-        });
+      if (insertError) {
+        console.error(`❌ ${providerName} poll insert error:`, insertError.message);
+        continue;
+      }
 
-        const payload = msgResponse.data.payload;
-        if (!payload) continue;
-        const headers = payload.headers || [];
+      console.log(`📬 Nouvel email ${providerName} (user ${userId.substring(0, 8)}): ${full.subject} (de ${full.from})`);
 
-        const from = getHeader(headers, 'From');
-        const subject = getHeader(headers, 'Subject') || '(sans objet)';
-        const dateStr = getHeader(headers, 'Date');
-        const gmailMessageId = getHeader(headers, 'Message-ID');
-        const body = extractBodyFromPayload(payload);
-
-        const { data: email, error: insertError } = await supabase
-          .from('emails')
-          .insert({
-            user_id: userId,
-            expediteur: from,
-            objet: subject,
-            resume: null,
-            brouillon: null,
-            pipeline_step: 'en_attente',
-            statut: 'en_attente',
-            contexte_choisi: 'standard',
-            metadata: { gmail_message_id: msgItem.id, gmail_rfc_message_id: gmailMessageId }
-          })
-          .select()
-          .single();
-
-        if (insertError) {
-          console.error('❌ Gmail poll insert error:', insertError.message);
-          continue;
-        }
-
-        console.log('📬 Nouvel email Gmail (user ' + userId.substring(0, 8) + '): ' + subject + ' (de ' + from + ')');
-
-        const attachmentParts = collectAttachmentParts(payload);
-
-        processEmailWithAI(email.id, {
-          subject: subject,
-          sender: from,
-          body: body,
-          userId: userId,
-          attachments: [],
-          messageId: null,
-        }).then(async () => {
-          // After AI processing, the email has a dossier_id — process attachments
-          if (attachmentParts.length > 0) {
-            try {
-              const { data: updatedEmail } = await supabase
-                .from('emails')
-                .select('dossier_id')
-                .eq('id', email.id)
-                .single();
-              const dossierId = updatedEmail?.dossier_id || null;
-              await processGmailAttachments(gmail, msgItem.id, attachmentParts, dossierId, email.id, userId);
-              console.log('📎 Gmail poll: ' + attachmentParts.length + ' PJ traitées pour email ' + email.id);
-            } catch (attErr: any) {
-              console.error('❌ Gmail poll attachment error:', attErr.message);
-            }
+      processEmailWithAI(email.id, {
+        subject: full.subject,
+        sender: full.from,
+        body: full.body,
+        userId,
+        attachments: [],
+        messageId: null,
+      }).then(async () => {
+        if (full.attachments.length > 0) {
+          try {
+            const { data: updatedEmail } = await supabase
+              .from('emails')
+              .select('dossier_id')
+              .eq('id', email.id)
+              .single();
+            const dossierId = updatedEmail?.dossier_id || null;
+            await processProviderAttachments(provider, rawMsg.id, full.attachments, dossierId, email.id, userId);
+          } catch (attErr: any) {
+            console.error(`❌ ${providerName} poll attachment error:`, attErr.message);
           }
-        }).catch((err: any) => {
-          console.error('❌ AI processing error (Gmail poll):', err.message);
-        });
+        }
+      }).catch((err: any) => {
+        console.error(`❌ AI processing error (${providerName} poll):`, err.message);
+      });
 
-        newCount++;
-      } catch (msgErr: any) {
-        console.error('❌ Gmail poll message error:', msgErr.message);
-      }
+      newCount++;
+    } catch (msgErr: any) {
+      if (msgErr instanceof TokenInvalidError) throw msgErr; // bubble up
+      console.error(`❌ ${providerName} poll message error:`, msgErr.message);
     }
+  }
 
-    // Update last check time for this user
-    await supabase
-      .from('configurations')
-      .update({ gmail_last_check: new Date().toISOString() })
-      .eq('user_id', userId);
+  await supabase
+    .from('configurations')
+    .update({ [lastCheckField]: new Date().toISOString() })
+    .eq('user_id', userId);
 
-    if (newCount > 0) {
-      console.log('📬 Gmail poll (user ' + userId.substring(0, 8) + '): ' + newCount + ' nouveaux emails traités');
-    }
-
-  } catch (err: any) {
-    const errMsg = (err && err.message) || String(err);
-    const isInvalidGrant =
-      errMsg.includes('invalid_grant') ||
-      errMsg.includes('invalid_rapt') ||
-      errMsg.includes('Token has been expired or revoked');
-
-    if (isInvalidGrant) {
-      // Refresh token mort : on coupe le polling pour ce user et on lève le flag
-      // Le frontend lira gmail_needs_reconnect pour afficher la bannière de reconnexion.
-      console.warn('⚠️ Gmail poll: refresh_token invalide pour user ' + userId.substring(0, 8) + ' — flag gmail_needs_reconnect levé, polling arrêté pour ce user');
-      try {
-        await supabase
-          .from('configurations')
-          .update({ refresh_token: null, gmail_needs_reconnect: true })
-          .eq('user_id', userId);
-      } catch (markErr: any) {
-        console.error('❌ Gmail poll: échec marquage gmail_needs_reconnect:', markErr.message);
-      }
-      return;
-    }
-
-    console.error('❌ Gmail poll error (user ' + userId.substring(0, 8) + '):', errMsg);
+  if (newCount > 0) {
+    console.log(`📬 ${providerName} poll (user ${userId.substring(0, 8)}): ${newCount} nouveaux emails traités`);
   }
 }
+
+// ─── Main poll cycle ──────────────────────────────────────────────────────────
 
 async function checkAllUsers(): Promise<void> {
   try {
     const { data: configs, error } = await supabase
       .from('configurations')
-      .select('user_id, refresh_token, gmail_last_check')
-      .not('refresh_token', 'is', null);
+      .select('user_id, provider, refresh_token, gmail_last_check, outlook_refresh_token, outlook_last_check');
 
     if (error || !configs || configs.length === 0) return;
 
     for (const config of configs) {
-      await checkNewEmailsForUser(config.user_id, config.refresh_token, config.gmail_last_check);
+      const providerName: 'gmail' | 'outlook' = config.provider === 'outlook' ? 'outlook' : 'gmail';
+
+      if (providerName === 'gmail') {
+        if (!config.refresh_token) continue;
+
+        const provider = new GmailProvider({ refreshToken: config.refresh_token, userId: config.user_id });
+        try {
+          await checkNewEmailsForUser(config.user_id, provider, config.gmail_last_check, 'gmail');
+        } catch (err: any) {
+          if (err instanceof TokenInvalidError) {
+            console.warn(`⚠️ Gmail poll: token invalide pour user ${config.user_id.substring(0, 8)} — flag gmail_needs_reconnect levé`);
+            await supabase
+              .from('configurations')
+              .update({ refresh_token: null, gmail_needs_reconnect: true })
+              .eq('user_id', config.user_id);
+          } else {
+            console.error(`❌ Gmail poll error (user ${config.user_id.substring(0, 8)}):`, err.message);
+          }
+        }
+      } else {
+        // Outlook
+        if (!config.outlook_refresh_token) continue;
+
+        const provider = new OutlookProvider({ refreshToken: config.outlook_refresh_token, userId: config.user_id });
+        try {
+          await checkNewEmailsForUser(config.user_id, provider, config.outlook_last_check, 'outlook');
+        } catch (err: any) {
+          if (err instanceof TokenInvalidError) {
+            console.warn(`⚠️ Outlook poll: token invalide pour user ${config.user_id.substring(0, 8)} — flag outlook_needs_reconnect levé`);
+            await supabase
+              .from('configurations')
+              .update({ outlook_refresh_token: null, outlook_needs_reconnect: true })
+              .eq('user_id', config.user_id);
+          } else {
+            console.error(`❌ Outlook poll error (user ${config.user_id.substring(0, 8)}):`, err.message);
+          }
+        }
+      }
     }
   } catch (err: any) {
-    console.error('❌ Gmail poll global error:', err.message);
+    console.error('❌ Poll global error:', err.message);
   }
 }
 
-export async function startGmailPolling(): Promise<void> {
-  console.log('📬 Gmail polling initialisé (toutes les 30s) — mode multi-utilisateurs');
+// ─── Exported functions ───────────────────────────────────────────────────────
+
+export async function startMailPolling(): Promise<void> {
+  console.log('📬 Mail polling initialisé (toutes les 30s) — multi-providers, multi-utilisateurs');
 
   try {
     const { data: configs } = await supabase
       .from('configurations')
-      .select('user_id, refresh_token')
-      .not('refresh_token', 'is', null);
+      .select('user_id, provider, refresh_token, outlook_refresh_token');
 
-    if (!configs || configs.length === 0) {
-      console.log('📬 Aucun refresh_token trouvé — polling en attente (vérifiera toutes les 60s)');
+    const activeCount = (configs || []).filter(
+      (c: any) => (c.provider === 'outlook' ? c.outlook_refresh_token : c.refresh_token)
+    ).length;
+
+    if (activeCount === 0) {
+      console.log('📬 Aucun token trouvé — polling en attente (vérifiera toutes les 60s)');
       pollingTimer = setInterval(async () => {
         const { data: c } = await supabase
           .from('configurations')
-          .select('user_id, refresh_token')
-          .not('refresh_token', 'is', null);
-        if (c && c.length > 0) {
-          console.log('📬 ' + c.length + ' refresh token(s) détecté(s)! Démarrage du polling Gmail');
+          .select('user_id, provider, refresh_token, outlook_refresh_token');
+        const active = (c || []).filter(
+          (cfg: any) => (cfg.provider === 'outlook' ? cfg.outlook_refresh_token : cfg.refresh_token)
+        );
+        if (active.length > 0) {
+          console.log(`📬 ${active.length} token(s) détecté(s) — démarrage du polling`);
           clearInterval(pollingTimer!);
           pollingTimer = setInterval(checkAllUsers, POLL_INTERVAL);
           checkAllUsers();
@@ -365,10 +284,13 @@ export async function startGmailPolling(): Promise<void> {
       return;
     }
 
-    console.log('📬 ' + configs.length + ' utilisateur(s) avec refresh token — démarrage du polling Gmail');
+    console.log(`📬 ${activeCount} utilisateur(s) avec token — démarrage du polling`);
     pollingTimer = setInterval(checkAllUsers, POLL_INTERVAL);
     checkAllUsers();
   } catch (err: any) {
-    console.error('❌ Gmail polling init error:', err.message);
+    console.error('❌ Mail polling init error:', err.message);
   }
 }
+
+// Backward-compat alias — src/index.ts imports startGmailPolling
+export const startGmailPolling = startMailPolling;
