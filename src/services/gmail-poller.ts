@@ -177,15 +177,10 @@ async function checkNewEmailsForUser(userId: string, refreshToken: string, gmail
     const oauth2Client = createOAuthClient();
     oauth2Client.setCredentials({ refresh_token: refreshToken });
 
-    try {
-      await oauth2Client.getAccessToken();
-    } catch (tokenErr: any) {
-      if (tokenErr.response && tokenErr.response.status === 401) {
-        console.error('⚠️ Token Gmail expiré pour user ' + userId + ', reconnexion nécessaire');
-        return;
-      }
-      throw tokenErr;
-    }
+    // On laisse les erreurs (401, invalid_grant, etc) remonter au catch externe
+    // qui gère uniformément la révocation du refresh_token et le flag
+    // gmail_needs_reconnect.
+    await oauth2Client.getAccessToken();
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
@@ -265,10 +260,23 @@ async function checkNewEmailsForUser(userId: string, refreshToken: string, gmail
           userId: userId,
           attachments: [],
           messageId: null,
-          gmailAttachments: attachmentParts,
-          gmailMsgId: msgItem.id,
-          gmailAuth: oauth2Client
-        } as any).catch((err: any) => {
+        }).then(async () => {
+          // After AI processing, the email has a dossier_id — process attachments
+          if (attachmentParts.length > 0) {
+            try {
+              const { data: updatedEmail } = await supabase
+                .from('emails')
+                .select('dossier_id')
+                .eq('id', email.id)
+                .single();
+              const dossierId = updatedEmail?.dossier_id || null;
+              await processGmailAttachments(gmail, msgItem.id, attachmentParts, dossierId, email.id, userId);
+              console.log('📎 Gmail poll: ' + attachmentParts.length + ' PJ traitées pour email ' + email.id);
+            } catch (attErr: any) {
+              console.error('❌ Gmail poll attachment error:', attErr.message);
+            }
+          }
+        }).catch((err: any) => {
           console.error('❌ AI processing error (Gmail poll):', err.message);
         });
 
@@ -289,7 +297,28 @@ async function checkNewEmailsForUser(userId: string, refreshToken: string, gmail
     }
 
   } catch (err: any) {
-    console.error('❌ Gmail poll error (user ' + userId.substring(0, 8) + '):', err.message);
+    const errMsg = (err && err.message) || String(err);
+    const isInvalidGrant =
+      errMsg.includes('invalid_grant') ||
+      errMsg.includes('invalid_rapt') ||
+      errMsg.includes('Token has been expired or revoked');
+
+    if (isInvalidGrant) {
+      // Refresh token mort : on coupe le polling pour ce user et on lève le flag
+      // Le frontend lira gmail_needs_reconnect pour afficher la bannière de reconnexion.
+      console.warn('⚠️ Gmail poll: refresh_token invalide pour user ' + userId.substring(0, 8) + ' — flag gmail_needs_reconnect levé, polling arrêté pour ce user');
+      try {
+        await supabase
+          .from('configurations')
+          .update({ refresh_token: null, gmail_needs_reconnect: true })
+          .eq('user_id', userId);
+      } catch (markErr: any) {
+        console.error('❌ Gmail poll: échec marquage gmail_needs_reconnect:', markErr.message);
+      }
+      return;
+    }
+
+    console.error('❌ Gmail poll error (user ' + userId.substring(0, 8) + '):', errMsg);
   }
 }
 

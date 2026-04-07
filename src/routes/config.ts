@@ -25,6 +25,7 @@ function transformConfig(data: any): any {
     sources_favorites: Array.isArray(data.sources_favorites) ? data.sources_favorites : [],
     // SECURITE : refresh_token JAMAIS expose au frontend
     gmail_connected: !!data.refresh_token,
+    gmail_needs_reconnect: !!data.gmail_needs_reconnect,
     gmail_last_check: data.gmail_last_check || null,
     updated_at: data.updated_at || null,
   };
@@ -46,7 +47,15 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
       console.error('GET /api/config:', error.message);
       return res.status(500).json({ error: error.message });
     }
-    res.json(transformConfig(data));
+    // Add user email from auth
+    let userEmail = '';
+    try {
+      const { data: userData } = await supabase.auth.admin.getUserById(userId);
+      userEmail = (userData as any)?.user?.email || '';
+    } catch {}
+    const transformed = transformConfig(data);
+    transformed.user_email = userEmail;
+    res.json(transformed);
   } catch (err: any) {
     console.error('GET /api/config exception:', err.message);
     res.status(500).json({ error: 'Internal server error' });

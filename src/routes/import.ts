@@ -3,6 +3,7 @@ import { google } from 'googleapis';
 import { importGmail } from '../services/agents/agent-importer';
 import { generateBrief } from '../services/brief-generator';
 import { mergeDossiers } from '../services/dossier-merger';
+import { sendPostOnboardingBriefing } from '../services/briefing-cron';
 import { supabase } from '../config/supabase';
 import { randomBytes } from 'crypto';
 
@@ -124,9 +125,13 @@ router.get('/callback', async (req: Request, res: Response) => {
     }
 
     // 3b. Sauvegarder le refresh_token des qu'on l'a, peu importe le cas
+    // + reset le flag gmail_needs_reconnect (l'utilisateur vient de se reconnecter)
     if (tokens.refresh_token && userId) {
-      await supabase.from('configurations').update({ refresh_token: tokens.refresh_token }).eq('user_id', userId);
-      console.log('Refresh token sauvegarde pour', userId);
+      await supabase
+        .from('configurations')
+        .update({ refresh_token: tokens.refresh_token, gmail_needs_reconnect: false })
+        .eq('user_id', userId);
+      console.log('Refresh token sauvegarde + flag reconnect reset pour', userId);
     }
 
     // 4. Verifier si utilisateur existant avec refresh_token
@@ -164,7 +169,7 @@ router.get('/callback', async (req: Request, res: Response) => {
         importState = { status: 'running', processed: 0, total: 0, dossiers_created: 0, attachments_count: 0, last_result: null };
 
         // Reset gmail_last_check for full import
-        await supabase.from('configurations').update({ gmail_last_check: new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString() }).eq('user_id', userId);
+        await supabase.from('configurations').update({ gmail_last_check: new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString() }).eq('user_id', userId);
 
         const { importGmail } = require('../services/agents/agent-importer');
         importGmail({
@@ -176,11 +181,33 @@ router.get('/callback', async (req: Request, res: Response) => {
             importState.dossiers_created = progress.dossiers_created;
             importState.attachments_count = progress.attachments_count || 0;
           },
-        }).then((result: any) => {
+        }).then(async (result: any) => {
           importState.status = 'done';
           importState.last_result = result;
           importState.progress = 100;
           console.log('Import termine:', JSON.stringify(result));
+          // Fusionner les dossiers fragmentes
+          try {
+            console.log('Fusion des dossiers post-import pour', userId);
+            await mergeDossiers(userId);
+            console.log('Fusion des dossiers terminee');
+          } catch (mergeErr: any) {
+            console.error('Fusion dossiers erreur:', mergeErr.message);
+          }
+          // Generer le brief post-import
+          try {
+            console.log('Generation du brief post-import pour', userId);
+            await generateBrief(userId!, 1);
+            console.log('Brief post-import genere avec succes');
+          } catch (briefErr: any) {
+            console.error('Brief post-import erreur:', briefErr.message);
+          }
+          // Envoyer le briefing par email
+          try {
+            await sendPostOnboardingBriefing(userId!);
+          } catch (emailErr: any) {
+            console.error('Email briefing post-import erreur:', emailErr.message);
+          }
         }).catch((err: any) => {
           importState.status = 'error';
           console.error('Import error:', err.message);
@@ -237,6 +264,7 @@ router.get('/callback', async (req: Request, res: Response) => {
           importState.processed = progress.processed;
           importState.total = progress.total;
           importState.dossiers_created = progress.dossiers_created;
+          importState.attachments_count = progress.attachments_count || 0;
         },
       }).then(async (result: any) => {
         importState.status = 'done';
@@ -250,13 +278,19 @@ router.get('/callback', async (req: Request, res: Response) => {
         } catch (mergeErr: any) {
           console.error('Fusion dossiers erreur:', mergeErr.message);
         }
-        // Generer le premier brief sur toute la periode importee (90 jours)
+        // Generer le premier brief (24h — briefing du jour)
         try {
           console.log('Generation du brief post-import pour', userId);
-          await generateBrief(userId!, 90);
+          await generateBrief(userId!, 1);
           console.log('Brief post-import genere avec succes');
         } catch (briefErr: any) {
           console.error('Brief post-import erreur:', briefErr.message);
+        }
+        // Envoyer le briefing par email
+        try {
+          await sendPostOnboardingBriefing(userId!);
+        } catch (emailErr: any) {
+          console.error('Email briefing post-import erreur:', emailErr.message);
         }
       }).catch((err: any) => {
         importState.status = 'error';

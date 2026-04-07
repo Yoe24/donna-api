@@ -14,3 +14,9 @@ yarn-error.log*
 *.swp
 *.swo
 *~
+
+# Anti-leak (added 2026-04-07 by Alpha)
+run-import.js
+import-log.txt
+.claude/
+*.local
