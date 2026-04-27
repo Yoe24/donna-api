@@ -14,8 +14,13 @@ import dossierRoutes from './routes/dossiers';
 import configRoutes from './routes/config';
 import briefRoutes from './routes/briefs';
 import accountRoutes from './routes/account';
+import chatRoutes from './routes/chat';
+import notificationRoutes from './routes/notifications';
+import calendarRoutes from './routes/calendar';
 import { authMiddleware } from './middleware/auth';
 import { startGmailPolling } from './services/gmail-poller';
+import { startDailyBriefingCron } from './services/briefing-cron';
+import webhookRoutes from './routes/webhooks';
 
 const app = express();
 const httpServer = createServer(app);
@@ -48,6 +53,7 @@ io.on('connection', (socket) => {
 
 // Public routes (no auth)
 app.use('/health', healthRoutes);
+app.use('/webhooks', webhookRoutes); // No auth - Resend needs direct access
 
 // Protected routes (auth required)
 app.use('/api/emails', authMiddleware, emailRoutes);
@@ -56,6 +62,9 @@ app.use('/api/dossiers', authMiddleware, dossierRoutes);
 app.use('/api/config', authMiddleware, configRoutes);
 app.use('/api/briefs', authMiddleware, briefRoutes);
 app.use('/api/account', authMiddleware, accountRoutes);
+app.use('/api/chat', authMiddleware, chatRoutes);
+app.use('/api/notifications', authMiddleware, notificationRoutes);
+app.use('/api/calendar-events', authMiddleware, calendarRoutes);
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -84,6 +93,10 @@ async function startServer() {
     }).catch((err) => {
       console.error('Gmail polling failed to start:', err.message);
     });
+
+    // Start daily briefing email cron (8h00 chaque jour)
+    startDailyBriefingCron();
+    console.log('Daily briefing cron scheduled (8h00)');
   });
 }
 
