@@ -4,6 +4,7 @@ import { filterEmail } from './agents/agent-filter';
 import { getEmailContext } from './agents/agent-context';
 import { draftResponse } from './agents/agent-drafter';
 import { enrichDossier } from './dossier-enricher';
+import { extractDatesFromEmail } from './date-extractor';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -74,6 +75,48 @@ export async function processEmailWithAI(emailId: string, emailData: EmailData) 
         console.error('[ai-processor] enrichDossier fire-and-forget error:', err.message)
       );
     }
+
+    // ── Date extraction → calendar_events (non-blocking, additive) ──────────
+    if (dossierId) {
+      (async () => {
+        try {
+          const events = await extractDatesFromEmail({
+            emailBody: emailData.body || '',
+            emailSubject: emailData.subject || '',
+            attachments: emailData.attachmentsText || [],
+            useLLMFallback: true,
+          });
+
+          if (events.length === 0) return;
+
+          const rows = events.map((evt) => ({
+            dossier_id: dossierId,
+            user_id: emailData.userId,
+            date_start: evt.dateStart,
+            date_end: evt.dateEnd ?? null,
+            title: evt.title,
+            description: evt.description ?? null,
+            source_type: evt.sourceType,
+            source_id: emailId,
+            source_filename: evt.sourceFilename ?? null,
+            confidence: evt.confidence,
+          }));
+
+          const { error } = await supabase
+            .from('calendar_events')
+            .insert(rows);
+
+          if (error) {
+            console.error('[ai-processor] calendar_events insert error (non-blocking):', error.message);
+          } else {
+            console.log(`[ai-processor] calendar_events: ${rows.length} event(s) inserted for email ${emailId}`);
+          }
+        } catch (err: any) {
+          console.error('[ai-processor] date extraction error (non-blocking):', err?.message ?? err);
+        }
+      })();
+    }
+    // ── End date extraction ──────────────────────────────────────────────────
 
     // Step 3: Recherche de contexte (agent-context)
     await updatePipelineStep(emailId, 'recherche_contexte');
