@@ -20,7 +20,7 @@ export const ExtractedEventSchema = z.object({
   event_type: EventTypeSchema,
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
   time: z.string().regex(/^\d{2}:\d{2}$/, 'time must be HH:MM').nullable(),
-  timezone: z.string().default('Europe/Paris'),
+  timezone: z.string().nullable().default('Europe/Paris'),
   title: z.string().max(80),
   description: z.string().max(200),
   court_or_context: z.string().nullable(),
