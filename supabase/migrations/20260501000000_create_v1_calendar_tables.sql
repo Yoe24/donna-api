@@ -5,7 +5,7 @@
 
 CREATE TABLE IF NOT EXISTS messages_v1 (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
   provider text NOT NULL,
   external_message_id text NOT NULL,
   thread_id text,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS attachments_v1 (
 
 CREATE TABLE IF NOT EXISTS events_v1 (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id uuid REFERENCES users(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES auth.users(id) ON DELETE CASCADE,
   event_type text NOT NULL,
   date date NOT NULL,
   time time,
