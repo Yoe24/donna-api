@@ -1,10 +1,12 @@
 // V1 Inbox to Calendar — Routes
 // Phase 2: /import implemented (Gmail + Outlook ingest).
-// Phase 3-5: other routes remain stubs.
+// Phase 3: /process implemented (CLASSIFY + EXTRACT, no persistence yet).
+// Phase 4-5: other routes remain stubs.
 import { Router, Response } from 'express';
 import { authMiddleware, AuthenticatedRequest } from '../../middleware/auth';
 import { ingestGmail60d } from './services/ingester.gmail';
 import { ingestOutlook60d } from './services/ingester.outlook';
+import { processUserMessages } from './services/processMessages';
 
 const router = Router();
 
@@ -30,6 +32,21 @@ router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
     return res.json({ status: 'ok', provider, ...result });
   } catch (err: any) {
     console.error('[v1-import]', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/lab/process
+// Runs CLASSIFY + EXTRACT on all messages_v1 for the authenticated user.
+// Phase 3: no persistence to events_v1 yet. Returns counters + sample events for debug.
+router.post('/process', async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthenticated' });
+  try {
+    const result = await processUserMessages(userId);
+    return res.json({ status: 'ok', ...result });
+  } catch (err: any) {
+    console.error('[v1-process]', err);
     return res.status(500).json({ error: err.message });
   }
 });
