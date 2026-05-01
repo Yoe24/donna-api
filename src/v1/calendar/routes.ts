@@ -2,7 +2,7 @@
 // Phase 2: /import implemented (Gmail + Outlook ingest).
 // Phase 4: /process refactored to async job pattern (fire-and-forget + polling).
 //          /process/status/:job_id returns job state.
-// Phase 5: other routes remain stubs.
+// Phase 5: GET /events, PATCH /events/:id, GET /events/:id/source implemented.
 
 import { randomUUID } from 'crypto';
 import { Router, Response } from 'express';
@@ -10,6 +10,7 @@ import { authMiddleware, AuthenticatedRequest } from '../../middleware/auth';
 import { ingestGmail60d } from './services/ingester.gmail';
 import { ingestOutlook60d } from './services/ingester.outlook';
 import { processUserMessages, globalJobs, type JobState } from './services/processMessages';
+import { supabase } from '../../config/supabase';
 
 const router = Router();
 
@@ -121,26 +122,239 @@ router.get('/import/status/:job_id', (req: AuthenticatedRequest, res: Response) 
   });
 });
 
-// GET /api/v1/lab/events — stub (Phase 5)
-router.get('/events', async (_req: AuthenticatedRequest, res: Response) => {
-  res.json({ events: [] });
+// GET /api/v1/lab/events — Phase 5
+// Query params: from, to, status (auto|to_verify|all), type, count_only
+router.get('/events', async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthenticated' });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultTo = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const from = (req.query.from as string) || today;
+  const to = (req.query.to as string) || defaultTo;
+  const statusParam = (req.query.status as string) || 'all';
+  const typeParam = req.query.type as string | undefined;
+  const countOnly = req.query.count_only === 'true';
+
+  try {
+    let query = supabase
+      .from('events_v1')
+      .select(
+        'id, event_type, date, time, timezone, title, description, court_or_context, client, counterparty, case_ref, confidence, status, source_message_id, source_attachment_id, source_type, source_excerpt, user_action, created_at'
+      )
+      .eq('user_id', userId)
+      .gte('date', from)
+      .lte('date', to)
+      .order('date', { ascending: true })
+      .order('time', { ascending: true, nullsFirst: false });
+
+    // Status filter: default 'all' excludes dismissed; 'all' means auto + to_verify
+    if (statusParam === 'auto') {
+      query = query.eq('status', 'auto');
+    } else if (statusParam === 'to_verify') {
+      query = query.eq('status', 'to_verify');
+    } else {
+      // 'all' = auto + to_verify (not dismissed)
+      query = query.in('status', ['auto', 'to_verify']);
+    }
+
+    if (typeParam) {
+      query = query.eq('event_type', typeParam);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('[v1-events] query error:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    const events = data ?? [];
+
+    if (countOnly) {
+      return res.json({ count: events.length });
+    }
+
+    return res.json({ events, count: events.length });
+  } catch (err: any) {
+    console.error('[v1-events]', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
-// PATCH /api/v1/lab/events/:id — stub (Phase 5)
+// PATCH /api/v1/lab/events/:id — Phase 5
+// Body: { action: 'confirm'|'edit'|'dismiss', edits?: { title?, date?, time?, ... } }
 router.patch('/events/:id', async (req: AuthenticatedRequest, res: Response) => {
-  res.json({
-    status: 'stub',
-    id: req.params.id,
-    action: req.body?.action ?? null,
-  });
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthenticated' });
+
+  const { id } = req.params;
+  const { action, edits } = req.body ?? {};
+
+  if (!action || !['confirm', 'edit', 'dismiss'].includes(action)) {
+    return res.status(400).json({ error: 'action must be confirm, edit, or dismiss' });
+  }
+
+  try {
+    // Verify event belongs to user
+    const { data: existing, error: fetchErr } = await supabase
+      .from('events_v1')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+
+    if (fetchErr || !existing) {
+      return res.status(404).json({ error: 'event not found' });
+    }
+
+    let updatePayload: Record<string, unknown> = {
+      user_action_at: new Date().toISOString(),
+    };
+
+    if (action === 'confirm') {
+      updatePayload.user_action = 'confirmed';
+    } else if (action === 'dismiss') {
+      updatePayload.user_action = 'dismissed';
+    } else if (action === 'edit') {
+      updatePayload.user_action = 'edited';
+      // Apply allowed field edits (no dedup_hash recalc to avoid phantom duplicates)
+      const allowed = ['title', 'date', 'time', 'description', 'court_or_context', 'client', 'counterparty', 'case_ref', 'event_type'];
+      if (edits && typeof edits === 'object') {
+        for (const key of allowed) {
+          if (key in edits) {
+            updatePayload[key] = (edits as Record<string, unknown>)[key];
+          }
+        }
+      }
+    }
+
+    const { error: updateErr } = await supabase
+      .from('events_v1')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    if (updateErr) {
+      return res.status(500).json({ error: updateErr.message });
+    }
+
+    return res.json({ ok: true, id, action });
+  } catch (err: any) {
+    console.error('[v1-events-patch]', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
-// GET /api/v1/lab/events/:id/source — stub (Phase 5)
+// GET /api/v1/lab/events/:id/source — Phase 5
+// Returns link to original email thread or signed URL for attachment
 router.get('/events/:id/source', async (req: AuthenticatedRequest, res: Response) => {
-  res.json({
-    status: 'stub',
-    id: req.params.id,
-  });
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthenticated' });
+
+  const { id } = req.params;
+
+  try {
+    // Fetch event
+    const { data: event, error: eventErr } = await supabase
+      .from('events_v1')
+      .select('id, source_type, source_message_id, source_attachment_id, source_excerpt')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .single();
+
+    if (eventErr || !event) {
+      return res.status(404).json({ error: 'event not found' });
+    }
+
+    const result: Record<string, unknown> = {
+      source_excerpt: event.source_excerpt,
+    };
+
+    // Case 1: email body → return Gmail thread URL
+    if (event.source_type === 'email_body' && event.source_message_id) {
+      const { data: msg, error: msgErr } = await supabase
+        .from('messages_v1')
+        .select('thread_id, subject, provider')
+        .eq('id', event.source_message_id)
+        .single();
+
+      if (msgErr || !msg) {
+        result.kind = 'email';
+        result.gmail_thread_url = null;
+        result.subject = null;
+      } else {
+        result.kind = 'email';
+        result.subject = msg.subject;
+        if (msg.provider === 'gmail' && msg.thread_id) {
+          result.gmail_thread_url = `https://mail.google.com/mail/u/0/#all/${msg.thread_id}`;
+        } else if (msg.provider === 'outlook') {
+          // Outlook deep-link not available in V1
+          result.gmail_thread_url = null;
+          result.outlook_note = 'Outlook deep-link not yet implemented';
+        } else {
+          result.gmail_thread_url = null;
+        }
+      }
+      return res.json(result);
+    }
+
+    // Case 2: attachment → return signed URL from Supabase Storage
+    if (event.source_type && event.source_type.startsWith('attachment_') && event.source_attachment_id) {
+      const { data: att, error: attErr } = await supabase
+        .from('attachments_v1')
+        .select('filename, storage_url, mime_type')
+        .eq('id', event.source_attachment_id)
+        .single();
+
+      if (attErr || !att) {
+        result.kind = 'attachment';
+        result.signed_url = null;
+        return res.json(result);
+      }
+
+      // storage_url can be a full URL or just a path — extract path
+      let storagePath = att.storage_url ?? '';
+      // If it's a full supabase URL, extract just the path after the bucket name
+      const bucketName = 'v1-attachments';
+      const bucketMarker = `/object/public/${bucketName}/`;
+      if (storagePath.includes(bucketMarker)) {
+        storagePath = storagePath.split(bucketMarker)[1];
+      }
+      // If it starts with https but without our marker, use as-is (will likely fail signing)
+      if (storagePath.startsWith('https://')) {
+        result.kind = 'attachment';
+        result.filename = att.filename;
+        result.mime_type = att.mime_type;
+        result.signed_url = storagePath; // fallback: return raw URL
+        return res.json(result);
+      }
+
+      const { data: signed, error: signErr } = await supabase.storage
+        .from(bucketName)
+        .createSignedUrl(storagePath, 3600);
+
+      result.kind = 'attachment';
+      result.filename = att.filename;
+      result.mime_type = att.mime_type;
+
+      if (signErr || !signed) {
+        result.signed_url = null;
+        result.error = signErr?.message ?? 'could not sign URL';
+      } else {
+        result.signed_url = signed.signedUrl;
+      }
+
+      return res.json(result);
+    }
+
+    // Fallback: no source resolvable
+    return res.json({ kind: 'unknown', source_excerpt: event.source_excerpt });
+  } catch (err: any) {
+    console.error('[v1-events-source]', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;
