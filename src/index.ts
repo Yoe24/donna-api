@@ -17,6 +17,7 @@ import accountRoutes from './routes/account';
 import chatRoutes from './routes/chat';
 import notificationRoutes from './routes/notifications';
 import calendarRoutes from './routes/calendar';
+import { v1CalendarRouter } from './v1/calendar';
 import { authMiddleware } from './middleware/auth';
 import { startGmailPolling } from './services/gmail-poller';
 import { startDailyBriefingCron } from './services/briefing-cron';
@@ -65,6 +66,9 @@ app.use('/api/account', authMiddleware, accountRoutes);
 app.use('/api/chat', authMiddleware, chatRoutes);
 app.use('/api/notifications', authMiddleware, notificationRoutes);
 app.use('/api/calendar-events', authMiddleware, calendarRoutes);
+
+// V1 Inbox to Calendar — isolated pipeline, parallel to existing dossiers.
+app.use('/api/v1/lab', v1CalendarRouter);
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
