@@ -160,7 +160,8 @@ async function importMail(
   const dossierMap: Record<string, string> = {};
   for (const senderEmail in bySender) {
     const group = bySender[senderEmail];
-    if (group.length < 3) continue;
+    const hasAttachment = group.some(em => em.attachsMeta && em.attachsMeta.length > 0);
+    if (group.length < 3 && !hasAttachment) continue;
     try {
       group.sort((a, b) => b.date.getTime() - a.date.getTime());
       const latest = group[0];
