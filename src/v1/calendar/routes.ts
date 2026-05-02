@@ -3,6 +3,7 @@
 // Phase 4: /process refactored to async job pattern (fire-and-forget + polling).
 //          /process/status/:job_id returns job state.
 // Phase 5: GET /events, PATCH /events/:id, GET /events/:id/source implemented.
+// Phase 6: POST /reset — purge _v1 tables for test loops. ?reset=1 on /import and /process.
 
 import { randomUUID } from 'crypto';
 import { Router, Response } from 'express';
@@ -12,12 +13,76 @@ import { ingestOutlook60d } from './services/ingester.outlook';
 import { processUserMessages, globalJobs, type JobState } from './services/processMessages';
 import { supabase } from '../../config/supabase';
 
+// ─── Helper: purge _v1 tables for a given user ────────────────────────────────
+// Order matters: events_v1.source_message_id references messages_v1.id (no CASCADE),
+// so delete events first. attachments_v1.message_id has ON DELETE CASCADE from messages_v1,
+// but we delete explicitly to get the count.
+async function purgeV1Tables(userId: string): Promise<{
+  deleted_events: number;
+  deleted_attachments: number;
+  deleted_messages: number;
+}> {
+  // 1. Delete events_v1 first (no FK cascade to messages_v1)
+  const { data: evData, error: evErr } = await supabase
+    .from('events_v1')
+    .delete()
+    .eq('user_id', userId)
+    .select('id');
+  if (evErr) throw new Error(`purge events_v1: ${evErr.message}`);
+
+  // 2. Delete attachments_v1 via message_id IN (messages belonging to user)
+  const { data: attData, error: attErr } = await supabase
+    .from('attachments_v1')
+    .delete()
+    .in(
+      'message_id',
+      // sub-select: get message ids for this user
+      (
+        await supabase.from('messages_v1').select('id').eq('user_id', userId)
+      ).data?.map((r: { id: string }) => r.id) ?? []
+    )
+    .select('id');
+  if (attErr) throw new Error(`purge attachments_v1: ${attErr.message}`);
+
+  // 3. Delete messages_v1
+  const { data: msgData, error: msgErr } = await supabase
+    .from('messages_v1')
+    .delete()
+    .eq('user_id', userId)
+    .select('id');
+  if (msgErr) throw new Error(`purge messages_v1: ${msgErr.message}`);
+
+  return {
+    deleted_events: evData?.length ?? 0,
+    deleted_attachments: attData?.length ?? 0,
+    deleted_messages: msgData?.length ?? 0,
+  };
+}
+
 const router = Router();
 
 router.use(authMiddleware);
 
+// POST /api/v1/lab/reset
+// Purges events_v1 / attachments_v1 / messages_v1 for the authenticated user.
+// Returns counts of deleted rows. No ingest is triggered.
+router.post('/reset', async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'unauthenticated' });
+
+  try {
+    const counts = await purgeV1Tables(userId);
+    console.log(`[v1-reset] user=${userId} purged: events=${counts.deleted_events} attachments=${counts.deleted_attachments} messages=${counts.deleted_messages}`);
+    return res.json(counts);
+  } catch (err: any) {
+    console.error('[v1-reset]', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/v1/lab/import
-// Body: { provider: 'gmail' | 'outlook' }
+// Body: { provider: 'gmail' | 'outlook', reset?: boolean }
+// Query: ?reset=1 also triggers purge before ingest.
 router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ error: 'unauthenticated' });
@@ -27,12 +92,21 @@ router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
     return res.status(400).json({ error: 'provider must be gmail or outlook' });
   }
 
+  // reset=1 in query OR reset: true in body
+  const shouldReset = req.query.reset === '1' || req.body?.reset === true;
+
   try {
+    let resetCounts: Awaited<ReturnType<typeof purgeV1Tables>> | null = null;
+    if (shouldReset) {
+      resetCounts = await purgeV1Tables(userId);
+      console.log(`[v1-import] reset before ingest — user=${userId} events=${resetCounts.deleted_events} msgs=${resetCounts.deleted_messages}`);
+    }
+
     const result =
       provider === 'gmail'
         ? await ingestGmail60d(userId)
         : await ingestOutlook60d(userId);
-    return res.json({ status: 'ok', provider, ...result });
+    return res.json({ status: 'ok', provider, reset: resetCounts, ...result });
   } catch (err: any) {
     console.error('[v1-import]', err);
     return res.status(500).json({ error: err.message });
@@ -42,9 +116,23 @@ router.post('/import', async (req: AuthenticatedRequest, res: Response) => {
 // POST /api/v1/lab/process
 // Async: returns {job_id, status:'processing'} immediately.
 // Pipeline runs in background. Poll /process/status/:job_id for result.
-router.post('/process', (req: AuthenticatedRequest, res: Response) => {
+// Query: ?reset=1 OR body: { reset: true } to purge _v1 tables before processing.
+router.post('/process', async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ error: 'unauthenticated' });
+
+  // reset=1 in query OR reset: true in body
+  const shouldReset = req.query.reset === '1' || req.body?.reset === true;
+
+  try {
+    if (shouldReset) {
+      const counts = await purgeV1Tables(userId);
+      console.log(`[v1-process] reset before process — user=${userId} events=${counts.deleted_events} msgs=${counts.deleted_messages}`);
+    }
+  } catch (err: any) {
+    console.error('[v1-process] reset failed:', err);
+    return res.status(500).json({ error: `reset failed: ${err.message}` });
+  }
 
   const job_id = randomUUID();
 
