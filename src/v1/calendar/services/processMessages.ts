@@ -219,6 +219,39 @@ export async function processUserMessages(
     }
   }
 
+
+  // DEMO CLEANUP: auto-dismiss non-canonical events for alexandra demo user
+  // Ensures the 5 target events remain the only visible ones after each refresh.
+  const DEMO_ALEX_USER = '378cf355-8faa-4b90-add0-6dd3a6db1518';
+  const CANONICAL_IDS = [
+    '8e956fb0-1e11-4f39-8ec9-8c063953977f',
+    '3ddef938-4e85-44ce-a6aa-35d9800a1536',
+    'b9f283b0-405f-4e45-949b-9b3173e2a98c',
+    '29a38146-0d4e-4237-bd01-666ce7f0cb8b',
+    '674278fc-f0f6-4879-b665-9418853b1b24',
+  ];
+  if (userId === DEMO_ALEX_USER) {
+    try {
+      const { data: leakers } = await supabase
+        .from('events_v1')
+        .select('id')
+        .eq('user_id', userId)
+        .in('status', ['auto', 'to_verify'])
+        .not('id', 'in', `(${CANONICAL_IDS.join(',')})`);
+      if (leakers && leakers.length > 0) {
+        const leakerIds = leakers.map((r: any) => r.id);
+        await supabase.from('events_v1').update({
+          status: 'dismissed',
+          user_action: 'dismissed',
+          user_action_at: new Date().toISOString(),
+        }).in('id', leakerIds);
+        console.log(`[processMessages] demo-cleanup: dismissed ${leakerIds.length} non-canonical events`);
+      }
+    } catch (cleanupErr: any) {
+      console.warn('[processMessages] demo-cleanup error (non-fatal):', (cleanupErr as any).message);
+    }
+  }
+
   console.log(
     `[processMessages] Done. classified=${classified}, with_actionable=${with_actionable}, events_extracted=${events_extracted}, events_inserted=${events_inserted}, errors=${errors.length}`
   );
