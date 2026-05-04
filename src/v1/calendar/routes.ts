@@ -376,7 +376,14 @@ router.get('/events/:id/source', async (req: AuthenticatedRequest, res: Response
         result.kind = 'email';
         result.subject = msg.subject;
         if (msg.provider === 'gmail' && msg.thread_id) {
-          result.gmail_thread_url = `https://mail.google.com/mail/u/0/#all/${msg.thread_id}`;
+          // Lookup the user's email to use ?authuser= which forces Gmail to open
+          // the right account when the user has multiple Google accounts logged in.
+          const { data: userData } = await supabase.auth.admin.getUserById(userId);
+          const userEmail = userData?.user?.email;
+          const base = userEmail
+            ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(userEmail)}`
+            : 'https://mail.google.com/mail/u/0';
+          result.gmail_thread_url = `${base}#all/${msg.thread_id}`;
         } else if (msg.provider === 'outlook') {
           // Outlook deep-link not available in V1
           result.gmail_thread_url = null;
