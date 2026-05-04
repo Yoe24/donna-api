@@ -17,7 +17,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // ---------------------------------------------------------------------------
 
 const CLASSIFY_SYSTEM = `Tu es un assistant filtrage pour avocat contentieux commercial français.
-Tu vas recevoir un email + résumé pièces jointes. Réponds en JSON strict.`;
+Tu vas recevoir un email + résumé pièces jointes. Réponds en JSON strict.
+IMPORTANT : "has_actionable_dates" doit être TRUE uniquement si l'email contient une date CRITIQUE : audience, dépôt de conclusions, clôture d'instruction, closing M&A, ou rendez-vous stratégique majeur. Les envois de documents, transmissions de pièces, accusés de réception, et réunions préparatoires internes ne sont PAS des dates critiques → has_actionable_dates:false.`;
 
 export async function classifyMessage(input: {
   subject: string | null;
@@ -73,22 +74,40 @@ JSON:
 // EXTRACT — gpt-4o, strict JSON schema via zodResponseFormat
 // ---------------------------------------------------------------------------
 
-const EXTRACT_SYSTEM = `Tu es expert en extraction d'événements juridiques contentieux commercial français.
+// current_date is injected at runtime so the LLM can filter past dates
+const CURRENT_DATE = new Date().toISOString().slice(0, 10);
 
-Catégories STRICTES :
-- "hearing" : audience, comparution, mise en état, plaidoirie
-- "filing_deadline" : date limite conclusions, dépôt, communication de pièces
-- "meeting" : RDV, visio, call, expertise, réunion client
-- "procedural_deadline" : échéance procédure, injonction explicite (autre que dépôt)
-- "commercial_deadline" : signature, paiement, préavis, renouvellement explicite et non ambigu
+const EXTRACT_SYSTEM = `Tu es expert en extraction d'événements juridiques critiques pour cabinet d'avocat contentieux commercial français.
+Date du jour : ${CURRENT_DATE}.
+
+MISSION : Extraire UNIQUEMENT les dates critiques d'un dossier juridique de contentieux ou d'opération commerciale structurée.
+Les dates critiques sont EXCLUSIVEMENT :
+- "hearing" : audience, plaidoirie, comparution — date imposée par le tribunal
+- "filing_deadline" : date limite de dépôt de conclusions, communication de pièces — délai de rigueur imposé par ordonnance ou calendrier procédural
+- "procedural_deadline" : clôture d'instruction, ordonnance de mise en état, injonction procédurale explicite (hors dépôt)
+- "commercial_deadline" : closing M&A, date de paiement d'un prix, échéance de prescription irrévocable, renouvellement contractuel ferme
+- "meeting" : rendez-vous stratégique majeur avec le client (point stratégie, comité de direction, réunion d'arbitrage) — PAS les calls préparatoires internes
 - "unknown" : date détectée mais type ambigu
+
+IGNORER ABSOLUMENT (ne pas créer d'événement pour) :
+- Envois de documents, transmission de pièces, accusés de réception
+- RDV opérationnels internes (réunions préparatoires, calls de coordination entre avocats)
+- Dates de signature interne sans portée externe imposée
+- Mentions historiques de dates passées (audiiences déjà tenues, délais expirés)
+- Dates de facturation et de paiement d'honoraires du cabinet
+- Dates de réunions de comité d'entreprise ou instances sociales accessoires
+- Si une date apparaît dans plusieurs emails du même dossier (ex: même audience mentionnée 5 fois), n'extraire QU'UN SEUL événement — le plus précis
+
+FILTRE TEMPOREL STRICT :
+- Ne jamais extraire une date antérieure à ${CURRENT_DATE}. Si la date est passée, ignorer complètement.
+- Exception : si une date passée est mentionnée comme base de calcul d'un délai futur, calculer la date future et l'extraire.
 
 Règles strictes :
 1. Si la date est implicite ("la semaine prochaine") sans date absolue déductible, NE PAS créer d'événement.
 2. Pour "court_or_context", "client", "counterparty", "case_ref" : null si non identifiable explicitement.
 3. "source_excerpt" : phrase EXACTE (max 300 chars) du texte d'origine qui contient la date.
-4. "confidence" : 0..1. >= 0.85 si date+type+contexte clairs. < 0.6 si tu hésites.
-5. Plusieurs événements possibles dans le même email : retourne TOUS dans le tableau "events".`;
+4. "confidence" : 0..1. >= 0.85 si date+type+contexte clairs et date critique. < 0.6 si date accessoire ou ambiguë.
+5. Un seul email peut générer au MAXIMUM 1 événement. Si tu détectes plusieurs dates, ne retenir que la principale et la plus critique.`;
 
 async function callExtract(messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<ExtractionResult | null> {
   try {
