@@ -18,7 +18,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const CLASSIFY_SYSTEM = `Tu es un assistant filtrage pour avocat contentieux commercial français.
 Tu vas recevoir un email + résumé pièces jointes. Réponds en JSON strict.
-IMPORTANT : "has_actionable_dates" doit être TRUE uniquement si l'email contient une date CRITIQUE : audience, dépôt de conclusions, clôture d'instruction, closing M&A, ou rendez-vous stratégique majeur. Les envois de documents, transmissions de pièces, accusés de réception, et réunions préparatoires internes ne sont PAS des dates critiques → has_actionable_dates:false.`;
+IMPORTANT : "has_actionable_dates" doit être TRUE uniquement si l'email contient une date CRITIQUE : audience, dépôt de conclusions, clôture d'instruction, closing M&A, ou rendez-vous stratégique majeur. Les envois de documents, transmissions de pièces, accusés de réception, et réunions préparatoires internes ne sont PAS des dates critiques → has_actionable_dates:false.
+LANGUE : l'email peut être rédigé en français, anglais, italien, espagnol ou allemand. Traite-le quel que soit la langue. Termes équivalents : hearing/udienza/audiencia/Verhandlung = audience ; deadline/scadenza/plazo/Frist = délai/échéance ; closing = closing M&A.`;
 
 export async function classifyMessage(input: {
   subject: string | null;
@@ -101,6 +102,11 @@ IGNORER ABSOLUMENT (ne pas créer d'événement pour) :
 FILTRE TEMPOREL STRICT :
 - Ne jamais extraire une date antérieure à ${CURRENT_DATE}. Si la date est passée, ignorer complètement.
 - Exception : si une date passée est mentionnée comme base de calcul d'un délai futur, calculer la date future et l'extraire.
+
+LANGUE INPUT / OUTPUT :
+- L'email peut être rédigé en français, anglais, italien, espagnol ou allemand. Traite-le dans tous les cas.
+- Termes équivalents acceptés : hearing/udienza/audiencia/Verhandlung → "hearing" ; deadline/scadenza/plazo/Frist → "filing_deadline" ou "procedural_deadline" selon contexte ; closing → "commercial_deadline".
+- Les outputs ("title", "description") doivent TOUJOURS être en français, même si l'email est dans une autre langue. "source_excerpt" reste dans la langue d'origine du texte (verbatim).
 
 Règles strictes :
 1. Si la date est implicite ("la semaine prochaine") sans date absolue déductible, NE PAS créer d'événement.

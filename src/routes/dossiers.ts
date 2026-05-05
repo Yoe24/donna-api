@@ -35,6 +35,9 @@ function transformDossier(dossier: any, emailCount: number, documentCount: numbe
     created_at: dossier.created_at,
     email_count: emailCount || 0,
     document_count: documentCount || 0,
+    // Champs matching robuste (event ↔ dossier)
+    opposing_party: dossier.opposing_party || null,
+    case_reference: dossier.case_reference || null,
     // Enrichissement dossier (Étape B)
     echeances: dossier.echeances || [],
     resume_pj: dossier.resume_pj || null,
