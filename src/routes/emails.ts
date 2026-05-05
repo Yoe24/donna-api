@@ -83,7 +83,7 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
       .eq('user_id', userId)
       .neq('pipeline_step', 'importe')
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(500);
 
     if (error) return res.status(500).json({ error: error.message });
     const emails = data || [];
