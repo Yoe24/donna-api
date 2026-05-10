@@ -498,13 +498,16 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
         console.error('Outlook: erreur création config:', configErr.message);
       }
     } else {
+      const updates: any = {
+        provider: 'outlook',
+        outlook_needs_reconnect: false,
+      };
+      if (refreshToken) {
+        updates.outlook_refresh_token = refreshToken;
+      }
       await supabase
         .from('configurations')
-        .update({
-          provider: 'outlook',
-          outlook_refresh_token: refreshToken || null,
-          outlook_needs_reconnect: false,
-        })
+        .update(updates)
         .eq('user_id', userId);
     }
 
