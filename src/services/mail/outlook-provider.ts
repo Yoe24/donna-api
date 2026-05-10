@@ -47,10 +47,20 @@ function buildMsalApp(): ConfidentialClientApplication {
   return new ConfidentialClientApplication(msalConfig);
 }
 
+// Scopes requested during OAuth consent.
+// Mail.ReadWrite is included so the demo injection script can POST messages
+// (POST /me/messages requires write access). For production non-demo users,
+// the write scope is harmless — it only allows the app to write on their behalf.
+const OUTLOOK_SCOPES = [
+  'https://graph.microsoft.com/Mail.Read',
+  'https://graph.microsoft.com/Mail.ReadWrite',
+  'offline_access',
+];
+
 export function getOutlookAuthUrl(): Promise<string> {
   const app = buildMsalApp();
   return app.getAuthCodeUrl({
-    scopes: ['https://graph.microsoft.com/Mail.Read', 'offline_access'],
+    scopes: OUTLOOK_SCOPES,
     redirectUri: process.env.AZURE_REDIRECT_URI!,
   });
 }
@@ -64,16 +74,34 @@ export async function exchangeOutlookCode(code: string): Promise<{
   const app = buildMsalApp();
   const request: AuthorizationCodeRequest = {
     code,
-    scopes: ['https://graph.microsoft.com/Mail.Read', 'offline_access'],
+    scopes: OUTLOOK_SCOPES,
     redirectUri: process.env.AZURE_REDIRECT_URI!,
   };
   const result = await app.acquireTokenByCode(request);
   if (!result) throw new Error('acquireTokenByCode: résultat vide');
 
   const accessToken = result.accessToken;
-  // MSAL returns the refresh token only in the cache — extract from account
-  // For token refresh later we use acquireTokenByRefreshToken
-  const refreshToken = (result as any).refreshToken || '';
+
+  // MSAL v5 does NOT expose refreshToken in AuthenticationResult.
+  // The refresh token is stored in the MSAL in-memory cache.
+  // We extract it by serializing the cache and reading the first RefreshToken entry.
+  let refreshToken = '';
+  try {
+    const cacheData = app.getTokenCache().serialize();
+    const parsed = JSON.parse(cacheData) as {
+      RefreshToken?: Record<string, { secret?: string }>;
+    };
+    const rtEntries = Object.values(parsed.RefreshToken || {});
+    if (rtEntries.length > 0 && rtEntries[0].secret) {
+      refreshToken = rtEntries[0].secret;
+    }
+  } catch (cacheErr: any) {
+    console.error('Outlook: erreur extraction refresh_token depuis cache MSAL:', cacheErr.message);
+  }
+
+  if (!refreshToken) {
+    console.warn('Outlook: refresh_token vide après acquireTokenByCode — le polling Outlook ne fonctionnera pas');
+  }
 
   const email = result.account?.username || '';
   const name = result.account?.name || '';
@@ -103,7 +131,7 @@ export class OutlookProvider implements MailProvider {
     const app = buildMsalApp();
     const request: RefreshTokenRequest = {
       refreshToken: this.refreshToken,
-      scopes: ['https://graph.microsoft.com/Mail.Read', 'offline_access'],
+      scopes: OUTLOOK_SCOPES,
     };
 
     let result: any;

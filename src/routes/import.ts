@@ -493,6 +493,8 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
           provider: 'outlook',
           outlook_refresh_token: refreshToken || null,
           outlook_needs_reconnect: false,
+          // Outlook users have no Google Drive — disable Drive sync
+          drive_sync_enabled: false,
         });
       if (configErr) {
         console.error('Outlook: erreur création config:', configErr.message);
@@ -504,8 +506,18 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
           provider: 'outlook',
           outlook_refresh_token: refreshToken || null,
           outlook_needs_reconnect: false,
+          // Outlook users have no Google Drive — disable Drive sync
+          drive_sync_enabled: false,
         })
         .eq('user_id', userId);
+    }
+
+    // 3c. Demo reset — wipe DB BEFORE any import logic (no Drive for Outlook users)
+    if (email && isDemoResetUser(email)) {
+      console.log(`[DemoReset/Outlook] Demo user detected: ${email} — resetting DB...`);
+      // Pass null as refreshToken — Outlook users have no Google Drive to purge
+      await resetDemoUser(userId, null);
+      console.log(`[DemoReset/Outlook] Reset complete for ${email} — proceeding as fresh user`);
     }
 
     // 4. Generate magic link for frontend session
