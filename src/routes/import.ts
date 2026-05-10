@@ -9,6 +9,7 @@ import { supabase } from '../config/supabase';
 import { randomBytes } from 'crypto';
 import { getOutlookAuthUrl, exchangeOutlookCode, OutlookProvider } from '../services/mail/outlook-provider';
 import { triggerDriveExport } from '../services/drive-exporter';
+import { isDemoResetUser, resetDemoUser } from '../services/demo-reset';
 
 const router = Router();
 
@@ -164,8 +165,16 @@ router.get('/callback', async (req: Request, res: Response) => {
       console.log('Refresh token sauvegarde + flag reconnect reset pour', userId);
     }
 
+    // 3c. Demo reset — wipe DB + Drive BEFORE any import logic
+    if (profile.email && isDemoResetUser(profile.email)) {
+      console.log(`[DemoReset] Demo user detected: ${profile.email} — resetting...`);
+      await resetDemoUser(userId, tokens.refresh_token || null);
+      console.log(`[DemoReset] Reset complete for ${profile.email} — proceeding as fresh user`);
+    }
+
     // 4. Verifier si utilisateur existant avec refresh_token
-    const isReturningUser = existingConfig && (existingConfig as any).refresh_token;
+    // For demo users, always treat as fresh (data was just wiped)
+    const isReturningUser = !isDemoResetUser(profile.email || '') && existingConfig && (existingConfig as any).refresh_token;
 
     if (isReturningUser) {
       // Utilisateur existant : mettre a jour le refresh_token si nouveau, pas d'import
@@ -253,7 +262,8 @@ router.get('/callback', async (req: Request, res: Response) => {
           console.error('Import error:', err.message);
         });
 
-        const redirectUrl = 'https://www.donna-legal.com/onboarding?import=started&user_id=' + userId;
+        let redirectUrl = 'https://www.donna-legal.com/onboarding?import=started&user_id=' + userId;
+        if (profile.email && isDemoResetUser(profile.email)) redirectUrl += '&demo_reset=1';
         res.redirect(redirectUrl);
       } else {
         importState = { status: 'completed', processed: 0, total: 0, dossiers_created: 0, last_result: null };
@@ -352,6 +362,7 @@ router.get('/callback', async (req: Request, res: Response) => {
       if (sessionToken) {
         redirectUrl += '&token=' + encodeURIComponent(sessionToken);
       }
+      if (profile.email && isDemoResetUser(profile.email)) redirectUrl += '&demo_reset=1';
       res.redirect(redirectUrl);
     }
   } catch (err: any) {

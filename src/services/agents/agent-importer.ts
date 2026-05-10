@@ -9,6 +9,19 @@ import { GmailProvider } from '../mail/gmail-provider';
 
 const MAX_EMAILS = 2000;
 
+// ─── Dossier blacklist (false-positive filter) ────────────────────────────────
+// Names that look like system/cabinet names, not real clients.
+const BLACKLIST_NOMS_CLIENTS = [
+  'donna', 'cabinet', 'sent', 'envoyé', 'envoye', 'inbox', 'reçu', 'recu',
+  'me', 'moi', 'noreply', 'no-reply', 'donotreply', 'do-not-reply',
+  'notifications', 'notification', 'support', 'info', 'contact',
+];
+
+function isBlacklistedClient(nomClient: string): boolean {
+  const normalized = nomClient.trim().toLowerCase();
+  return BLACKLIST_NOMS_CLIENTS.some((b) => normalized === b || normalized.startsWith(b + ' '));
+}
+
 // ─── Legacy internal type kept for style-detection logic ───────────────────
 interface EmailObj {
   providerId: string;  // renamed from gmailId — provider-agnostic
@@ -166,6 +179,12 @@ async function importMail(
       group.sort((a, b) => b.date.getTime() - a.date.getTime());
       const latest = group[0];
       const nomClient = extractName(latest.from) || senderEmail;
+
+      // Skip blacklisted names (false positives: "Donna", "Cabinet", "Sent"…)
+      if (isBlacklistedClient(nomClient)) {
+        console.log(`[agent-importer] Skipping blacklisted client name: "${nomClient}" (${senderEmail})`);
+        continue;
+      }
 
       const { data: existingDossier } = await supabase
         .from('dossiers')
