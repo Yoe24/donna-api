@@ -349,15 +349,21 @@ export class DriveExporter {
  */
 export async function triggerDriveExport(userId: string): Promise<void> {
   try {
-    // Fetch refresh token
+    // Fetch refresh token + opt-in flag
     const { data: cfg, error } = await supabase
       .from('configurations')
-      .select('refresh_token, provider')
+      .select('refresh_token, provider, drive_sync_enabled')
       .eq('user_id', userId)
       .single();
 
     if (error || !cfg) {
       console.log(`[DriveExporter] No config for user ${userId.substring(0, 8)} — skip`);
+      return;
+    }
+
+    // Check opt-in: skip if user hasn't enabled Drive sync
+    if (!cfg.drive_sync_enabled) {
+      console.log(`[DriveExporter] Skipped (opt-in disabled) for user ${userId.substring(0, 8)}`);
       return;
     }
 
