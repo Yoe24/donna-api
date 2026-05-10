@@ -45,6 +45,7 @@ const USERS_TO_PROCESS = specificUser
   : DEFAULT_USERS;
 
 // ─── Canonical case name mapping ─────────────────────────────────────────────
+// Maps CASEREF (uppercase) → display name
 const CANONICAL_CASE_NAMES = {
   'BELAIR': 'BELAIR Distribution',
   'TECHFLOW': 'TechFlow SAS',
@@ -54,8 +55,46 @@ const CANONICAL_CASE_NAMES = {
   'LUMIÈRE': 'LUMIERE Cosmétiques',
 };
 
+// Normalization: maps verbose CASEREF variants → canonical CASEREF
+// Applied BEFORE lookup/creation, so "BELLINI SAS" → "BELLINI"
+const CASEREF_NORMALIZER = {
+  'BELLINI SAS': 'BELLINI',
+  'BELLINI RG 2026/00892': 'BELLINI',
+  'DOSSIER BELLINI SAS': 'BELLINI',
+  'BELAIR DISTRIBUTION': 'BELAIR',
+  'BELAIR RG 2026/PROC/0412': 'BELAIR',
+  'DOSSIER TECHFLOW SAS': 'TECHFLOW',
+  // Process-related subjects that should be attributed to their case:
+  // These cannot be determined automatically — they go to a "Divers" dossier
+  'CLÔTURE INSTRUCTION 13 MAI 2026': null,  // skip — cannot determine affaire
+  'PROJET LUMIERE COSMÉTIQUES': 'LUMIERE',
+  'AUDIENCE 22 MAI 2026': null,             // skip
+  'CONTREFAÇON BREVET EP2847321': 'TECHFLOW', // brevet EP2847321 → TechFlow context
+  'DEADLINE 19 MAI 2026': null,             // skip
+  'RG 2026/00892': 'BELLINI',              // RG number → BELLINI affaire
+  'RG 2026/01245': 'MARLOT',              // RG number → MARLOT affaire
+  'URGENT': null,                           // skip
+  'POINT STRATÉGIE 9 MAI 2026 11H00': null, // skip
+};
+
+function normalizeCaseRef(ref) {
+  if (!ref) return ref;
+  const upper = ref.toUpperCase();
+  // Direct match in normalizer
+  if (upper in CASEREF_NORMALIZER) return CASEREF_NORMALIZER[upper];
+  // Already a known canonical ref
+  if (upper in CANONICAL_CASE_NAMES) return upper;
+  // Check if it starts with a known canonical ref (e.g. "LUMIÈRE" → "LUMIERE")
+  for (const canonical of Object.keys(CANONICAL_CASE_NAMES)) {
+    if (upper.startsWith(canonical)) return canonical;
+  }
+  return ref;
+}
+
 function getCanonicalCaseName(caseRef) {
-  return CANONICAL_CASE_NAMES[caseRef] || caseRef;
+  const normalized = normalizeCaseRef(caseRef);
+  if (!normalized) return null;
+  return CANONICAL_CASE_NAMES[normalized] || normalized;
 }
 
 // ─── CASEREF extraction (mirrors TypeScript version) ─────────────────────────
@@ -68,7 +107,8 @@ function extractCaseReference(subject) {
   const ref = parts[0].trim().toUpperCase();
   if (!ref || /^\d+$/.test(ref)) return null;
   if (ref.length > 50) return null;
-  return ref;
+  // Normalize: return the canonical form (or null if skippable)
+  return normalizeCaseRef(ref);
 }
 
 // ─── Main cleanup logic ───────────────────────────────────────────────────────
@@ -138,6 +178,12 @@ async function processUser(userId, label) {
   for (const caseRef of caseRefs) {
     const canonicalName = getCanonicalCaseName(caseRef);
 
+    // Skip CASEREFs that cannot be resolved to a valid canonical name
+    if (!canonicalName) {
+      console.log(`\n⏭️  CASEREF "${caseRef}": skipped (no canonical mapping)`);
+      continue;
+    }
+
     // Search by metadata->case_reference
     const { data: byMeta } = await supabase
       .from('dossiers')
@@ -153,7 +199,26 @@ async function processUser(userId, label) {
       continue;
     }
 
-    // Search by nom_client ILIKE
+    // Search by canonical nom_client exact match first
+    const { data: byExactNom } = await supabase
+      .from('dossiers')
+      .select('id, nom_client')
+      .eq('user_id', userId)
+      .eq('nom_client', canonicalName)
+      .limit(1)
+      .maybeSingle();
+
+    if (byExactNom) {
+      caseRefDossierMap[caseRef] = byExactNom.id;
+      console.log(`\n♻️  CASEREF "${caseRef}": reusing existing dossier (exact match) "${byExactNom.nom_client}" [${byExactNom.id}]`);
+      await supabase
+        .from('dossiers')
+        .update({ metadata: { case_reference: caseRef } })
+        .eq('id', byExactNom.id);
+      continue;
+    }
+
+    // Search by nom_client ILIKE (e.g. "Antoine Belair" contains "BELAIR")
     const { data: byNom } = await supabase
       .from('dossiers')
       .select('id, nom_client')
@@ -164,12 +229,13 @@ async function processUser(userId, label) {
 
     if (byNom) {
       caseRefDossierMap[caseRef] = byNom.id;
-      console.log(`\n♻️  CASEREF "${caseRef}": reusing existing dossier (nom_client match) "${byNom.nom_client}" [${byNom.id}]`);
-      // Ensure metadata is set
+      console.log(`\n♻️  CASEREF "${caseRef}": reusing existing dossier (ILIKE match) "${byNom.nom_client}" [${byNom.id}]`);
+      // Rename to canonical name and set metadata
       await supabase
         .from('dossiers')
-        .update({ metadata: { case_reference: caseRef } })
+        .update({ nom_client: canonicalName, metadata: { case_reference: caseRef } })
         .eq('id', byNom.id);
+      console.log(`   Renamed to "${canonicalName}"`);
       continue;
     }
 
