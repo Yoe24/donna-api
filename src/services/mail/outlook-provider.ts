@@ -50,8 +50,9 @@ function buildMsalApp(): ConfidentialClientApplication {
 export function getOutlookAuthUrl(): Promise<string> {
   const app = buildMsalApp();
   return app.getAuthCodeUrl({
-    scopes: ['https://graph.microsoft.com/Mail.Read', 'offline_access'],
+    scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.ReadWrite', 'offline_access'],
     redirectUri: process.env.AZURE_REDIRECT_URI!,
+    prompt: 'consent',
   });
 }
 
