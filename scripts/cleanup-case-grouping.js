@@ -64,17 +64,17 @@ const CASEREF_NORMALIZER = {
   'BELAIR DISTRIBUTION': 'BELAIR',
   'BELAIR RG 2026/PROC/0412': 'BELAIR',
   'DOSSIER TECHFLOW SAS': 'TECHFLOW',
-  // Process-related subjects that should be attributed to their case:
-  // These cannot be determined automatically — they go to a "Divers" dossier
-  'CLÔTURE INSTRUCTION 13 MAI 2026': null,  // skip — cannot determine affaire
   'PROJET LUMIERE COSMÉTIQUES': 'LUMIERE',
-  'AUDIENCE 22 MAI 2026': null,             // skip
   'CONTREFAÇON BREVET EP2847321': 'TECHFLOW', // brevet EP2847321 → TechFlow context
-  'DEADLINE 19 MAI 2026': null,             // skip
   'RG 2026/00892': 'BELLINI',              // RG number → BELLINI affaire
   'RG 2026/01245': 'MARLOT',              // RG number → MARLOT affaire
-  'URGENT': null,                           // skip
-  'POINT STRATÉGIE 9 MAI 2026 11H00': null, // skip
+  // Multi-level subjects: first part is a date/context, real case is in second part
+  // These are manually mapped based on inspection of subject content:
+  'CLÔTURE INSTRUCTION 13 MAI 2026': 'BELAIR',   // "CLÔTURE ... — BELAIR Distribution"
+  'AUDIENCE 22 MAI 2026': 'BELLINI',             // "AUDIENCE ... — Bellini c/ Distri-Plus"
+  'DEADLINE 19 MAI 2026': 'MARLOT',             // "DEADLINE ... — Dépôt conclusions MARLOT c/ BioTech"
+  'POINT STRATÉGIE 9 MAI 2026 11H00': 'LUMIERE', // "POINT STRATÉGIE ... — LUMIERE Cosmétiques"
+  'URGENT': 'TECHFLOW',                          // "URGENT — TechFlow closing 15 mai 2026"
 };
 
 function normalizeCaseRef(ref) {
