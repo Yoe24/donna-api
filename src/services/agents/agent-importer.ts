@@ -22,6 +22,37 @@ function isBlacklistedClient(nomClient: string): boolean {
   return BLACKLIST_NOMS_CLIENTS.some((b) => normalized === b || normalized.startsWith(b + ' '));
 }
 
+// ─── Case reference extraction from email subject ─────────────────────────────
+// Pattern: "[CASE_REF] — description" or "[CASE_REF] - description" or "[CASE_REF] : description"
+// Returns uppercase canonical reference like "BELAIR", "TECHFLOW", "BELLINI", etc.
+export function extractCaseReference(subject: string): string | null {
+  if (!subject) return null;
+  // Split on em-dash, en-dash, colon, or hyphen (with optional spaces)
+  const separators = /\s*[—–:]\s*|\s+-\s+/;
+  const parts = subject.split(separators);
+  if (parts.length < 2) return null;
+  const ref = parts[0].trim().toUpperCase();
+  // Must be non-empty and not a pure number
+  if (!ref || /^\d+$/.test(ref)) return null;
+  // Must be reasonably short (a case name, not a long sentence)
+  if (ref.length > 50) return null;
+  return ref;
+}
+
+// ─── Canonical case name mapping ─────────────────────────────────────────────
+const CANONICAL_CASE_NAMES: Record<string, string> = {
+  'BELAIR': 'BELAIR Distribution',
+  'TECHFLOW': 'TechFlow SAS',
+  'BELLINI': 'Bellini SAS',
+  'MARLOT': 'MARLOT Industrie',
+  'LUMIERE': 'LUMIERE Cosmétiques',
+  'LUMIÈRE': 'LUMIERE Cosmétiques',
+};
+
+function getCanonicalCaseName(caseRef: string): string {
+  return CANONICAL_CASE_NAMES[caseRef] || caseRef;
+}
+
 // ─── Legacy internal type kept for style-detection logic ───────────────────
 interface EmailObj {
   providerId: string;  // renamed from gmailId — provider-agnostic
@@ -161,16 +192,125 @@ async function importMail(
     }
   }
 
-  // ── Step 3: Group by sender, create dossiers (threshold 3+) ──────────────
-  const bySender: Record<string, EmailObj[]> = {};
-  emails.forEach((e) => {
-    const key = e.fromEmail;
-    if (!key) return;
-    if (!bySender[key]) bySender[key] = [];
-    bySender[key].push(e);
-  });
+  // ── Step 3: Group by CASEREF (subject-based), fallback to sender ──────────
+  // Priority: CASEREF from subject > conversationId > sender (legacy fallback)
 
+  // 3a. Build a cache of existing dossiers for this user (for fast lookup)
+  const { data: existingDossiers } = await supabase
+    .from('dossiers')
+    .select('id, nom_client, email_client, metadata')
+    .eq('user_id', uid);
+
+  // dossierMap maps a lookup key → dossier_id
+  // Key can be: CASEREF (uppercase) or senderEmail (legacy)
   const dossierMap: Record<string, string> = {};
+  // caseRefDossierCache maps CASEREF → dossier_id (for dossiers already in DB)
+  const caseRefDossierCache: Record<string, string> = {};
+
+  // Populate cache from existing dossiers
+  for (const d of (existingDossiers || [])) {
+    // Check metadata.case_reference
+    const metaCaseRef = d.metadata?.case_reference as string | undefined;
+    if (metaCaseRef) {
+      caseRefDossierCache[metaCaseRef.toUpperCase()] = d.id;
+    }
+    // Check nom_client ILIKE match against known canonical names
+    for (const ref of Object.keys(CANONICAL_CASE_NAMES)) {
+      const canonicalName = CANONICAL_CASE_NAMES[ref];
+      if (d.nom_client && d.nom_client.toLowerCase().includes(ref.toLowerCase())) {
+        caseRefDossierCache[ref] = d.id;
+      }
+      if (d.nom_client === canonicalName) {
+        caseRefDossierCache[ref] = d.id;
+      }
+    }
+  }
+
+  // Helper: get or create a dossier for a CASEREF
+  async function getOrCreateCaseRefDossier(caseRef: string, latestEmail: EmailObj): Promise<string | null> {
+    // Already mapped in this run
+    if (dossierMap[caseRef]) return dossierMap[caseRef];
+    // Already in DB
+    if (caseRefDossierCache[caseRef]) {
+      dossierMap[caseRef] = caseRefDossierCache[caseRef];
+      return caseRefDossierCache[caseRef];
+    }
+
+    // Search DB by nom_client ILIKE or metadata->case_reference
+    const { data: byNomClient } = await supabase
+      .from('dossiers')
+      .select('id')
+      .eq('user_id', uid)
+      .ilike('nom_client', `%${caseRef}%`)
+      .limit(1)
+      .maybeSingle();
+
+    if (byNomClient) {
+      dossierMap[caseRef] = byNomClient.id;
+      caseRefDossierCache[caseRef] = byNomClient.id;
+      console.log(`♻️ Dossier existant réutilisé (nom_client match) pour CASEREF "${caseRef}" (id: ${byNomClient.id})`);
+      result.skipped_existing++;
+      return byNomClient.id;
+    }
+
+    // Create new dossier with canonical name
+    const canonicalName = getCanonicalCaseName(caseRef);
+    const { data: newDossier, error: dErr } = await supabase
+      .from('dossiers')
+      .insert({
+        user_id: uid,
+        nom_client: canonicalName,
+        email_client: null,
+        statut: 'actif',
+        dernier_echange_date: latestEmail.date.toISOString(),
+        dernier_echange_par: latestEmail.fromEmail,
+        metadata: { case_reference: caseRef },
+      })
+      .select()
+      .single();
+
+    if (dErr) {
+      console.error(`❌ agent-importer: dossier insert error pour CASEREF "${caseRef}":`, dErr.message);
+      return null;
+    }
+    dossierMap[caseRef] = newDossier.id;
+    caseRefDossierCache[caseRef] = newDossier.id;
+    result.dossiers_created++;
+    console.log(`📂 Dossier créé (CASEREF): ${canonicalName} (CASEREF: ${caseRef})`);
+    return newDossier.id;
+  }
+
+  // 3b. Group emails by CASEREF first, then by sender as legacy fallback
+  const byCaseRef: Record<string, EmailObj[]> = {};
+  const bySender: Record<string, EmailObj[]> = {};
+
+  for (const em of emails) {
+    const caseRef = extractCaseReference(em.subject);
+    if (caseRef) {
+      if (!byCaseRef[caseRef]) byCaseRef[caseRef] = [];
+      byCaseRef[caseRef].push(em);
+    } else {
+      // Legacy fallback: group by sender
+      const key = em.fromEmail;
+      if (!key) continue;
+      if (!bySender[key]) bySender[key] = [];
+      bySender[key].push(em);
+    }
+  }
+
+  // 3c. Create/find dossiers for CASEREF groups
+  for (const caseRef in byCaseRef) {
+    const group = byCaseRef[caseRef];
+    group.sort((a, b) => b.date.getTime() - a.date.getTime());
+    const latest = group[0];
+    try {
+      await getOrCreateCaseRefDossier(caseRef, latest);
+    } catch (e: any) {
+      console.error(`❌ agent-importer: erreur dossier CASEREF "${caseRef}":`, e.message);
+    }
+  }
+
+  // 3d. Legacy sender-based grouping (only for emails WITHOUT a CASEREF)
   for (const senderEmail in bySender) {
     const group = bySender[senderEmail];
     const hasAttachment = group.some(em => em.attachsMeta && em.attachsMeta.length > 0);
@@ -219,7 +359,7 @@ async function importMail(
       }
       dossierMap[senderEmail] = dossier.id;
       result.dossiers_created++;
-      console.log(`📂 Dossier créé: ${nomClient} (${group.length} emails)`);
+      console.log(`📂 Dossier créé (sender): ${nomClient} (${group.length} emails)`);
     } catch (e: any) {
       console.error(`❌ agent-importer: erreur dossier ${senderEmail}:`, e.message);
     }
@@ -231,7 +371,9 @@ async function importMail(
   for (let j = 0; j < emails.length; j++) {
     const em = emails[j];
     try {
-      const dossierId = dossierMap[em.fromEmail] || null;
+      // CASEREF takes priority over sender for dossier assignment
+      const caseRef = extractCaseReference(em.subject);
+      const dossierId = (caseRef && dossierMap[caseRef]) || dossierMap[em.fromEmail] || null;
 
       if (em.providerId) {
         const { data: existingEmail } = await supabase
