@@ -5,6 +5,7 @@ import { getEmailContext } from './agents/agent-context';
 import { draftResponse } from './agents/agent-drafter';
 import { enrichDossier } from './dossier-enricher';
 import { extractDatesFromEmail } from './date-extractor';
+import { triggerDriveExport } from './drive-exporter';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -160,6 +161,13 @@ export async function processEmailWithAI(emailId: string, emailData: EmailData) 
 
     // Step 8: Classification enrichie
     await enrichEmailClassification(emailId, emailData);
+
+    // Step 9: Drive export (fire-and-forget — never blocks the pipeline)
+    if (dossierId) {
+      triggerDriveExport(emailData.userId).catch((err: any) =>
+        console.error('[ai-processor] Drive export fire-and-forget error:', err.message)
+      );
+    }
 
     console.log('AI processing complete for email:', emailId);
   } catch (error: any) {

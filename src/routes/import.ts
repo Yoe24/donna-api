@@ -8,6 +8,7 @@ import { enrichDossier } from '../services/dossier-enricher';
 import { supabase } from '../config/supabase';
 import { randomBytes } from 'crypto';
 import { getOutlookAuthUrl, exchangeOutlookCode, OutlookProvider } from '../services/mail/outlook-provider';
+import { triggerDriveExport } from '../services/drive-exporter';
 
 const router = Router();
 
@@ -63,6 +64,7 @@ router.get('/gmail/auth', (req: Request, res: Response) => {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile',
+      'https://www.googleapis.com/auth/drive.file',
     ],
   });
   res.json({ auth_url });
@@ -242,6 +244,10 @@ router.get('/callback', async (req: Request, res: Response) => {
           } catch (emailErr: any) {
             console.error('Email briefing post-import erreur:', emailErr.message);
           }
+          // Export Drive (fire-and-forget, Gmail users only)
+          triggerDriveExport(userId!).catch((driveErr: any) =>
+            console.error('Drive export post-import erreur:', driveErr.message)
+          );
         }).catch((err: any) => {
           importState.status = 'error';
           console.error('Import error:', err.message);
@@ -332,6 +338,10 @@ router.get('/callback', async (req: Request, res: Response) => {
         } catch (emailErr: any) {
           console.error('Email briefing post-import erreur:', emailErr.message);
         }
+        // Export Drive (fire-and-forget, Gmail users only)
+        triggerDriveExport(userId!).catch((driveErr: any) =>
+          console.error('Drive export post-import erreur (gmail):', driveErr.message)
+        );
       }).catch((err: any) => {
         importState.status = 'error';
         console.error('Import Gmail erreur:', err.message);
