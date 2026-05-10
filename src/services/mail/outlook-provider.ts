@@ -72,9 +72,19 @@ export async function exchangeOutlookCode(code: string): Promise<{
   if (!result) throw new Error('acquireTokenByCode: résultat vide');
 
   const accessToken = result.accessToken;
-  // MSAL returns the refresh token only in the cache — extract from account
-  // For token refresh later we use acquireTokenByRefreshToken
-  const refreshToken = (result as any).refreshToken || '';
+  // MSAL v5 doesn't expose refreshToken on AuthenticationResult — extract from cache
+  let refreshToken = '';
+  try {
+    const cacheStr = await app.getTokenCache().serialize();
+    const cache = JSON.parse(cacheStr);
+    const refreshTokens = cache.RefreshToken || {};
+    const tokens: any[] = Object.values(refreshTokens);
+    if (tokens.length > 0) {
+      refreshToken = tokens[0].secret || '';
+    }
+  } catch (cacheErr: any) {
+    console.error('[outlook] Could not extract refresh_token from cache:', cacheErr.message);
+  }
 
   const email = result.account?.username || '';
   const name = result.account?.name || '';
