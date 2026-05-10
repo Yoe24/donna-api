@@ -6,6 +6,21 @@ import { draftResponse } from './agents/agent-drafter';
 import { enrichDossier } from './dossier-enricher';
 import { extractDatesFromEmail } from './date-extractor';
 import { triggerDriveExport } from './drive-exporter';
+import { extractCaseReference } from './agents/agent-importer';
+
+// ─── Canonical case name mapping (mirrors agent-importer) ────────────────────
+const CANONICAL_CASE_NAMES: Record<string, string> = {
+  'BELAIR': 'BELAIR Distribution',
+  'TECHFLOW': 'TechFlow SAS',
+  'BELLINI': 'Bellini SAS',
+  'MARLOT': 'MARLOT Industrie',
+  'LUMIERE': 'LUMIERE Cosmétiques',
+  'LUMIÈRE': 'LUMIERE Cosmétiques',
+};
+
+function getCanonicalCaseName(caseRef: string): string {
+  return CANONICAL_CASE_NAMES[caseRef] || caseRef;
+}
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -64,11 +79,11 @@ export async function processEmailWithAI(emailId: string, emailData: EmailData) 
       return;
     }
 
-    // Step 2: Archivage (logique archiviste)
+    // Step 2: Archivage (logique archiviste — CASEREF > sender)
     await updatePipelineStep(emailId, 'archivage_en_cours');
     const senderEmail = extractEmailAddress(emailData.sender);
     const senderName = extractSenderName(emailData.sender);
-    const dossierId = await archiveEmail(emailId, senderEmail, senderName, emailData.userId);
+    const dossierId = await archiveEmail(emailId, senderEmail, senderName, emailData.userId, emailData.subject);
 
     // Fire-and-forget: enrich dossier after archiving (non-blocking)
     if (dossierId) {
@@ -183,8 +198,88 @@ export async function processEmailWithAI(emailId: string, emailData: EmailData) 
   }
 }
 
-async function archiveEmail(emailId: string, senderEmail: string, senderName: string, userId: string): Promise<string | null> {
+async function archiveEmail(
+  emailId: string,
+  senderEmail: string,
+  senderName: string,
+  userId: string,
+  subject?: string,
+): Promise<string | null> {
   try {
+    let dossierId: string | null = null;
+    const now = new Date().toISOString();
+
+    // ── Fallback 1: CASEREF from subject (highest priority) ──────────────────
+    const caseRef = subject ? extractCaseReference(subject) : null;
+
+    if (caseRef) {
+      console.log(`Archiviste: CASEREF détecté "${caseRef}" depuis sujet "${subject}"`);
+
+      // Search by metadata->case_reference
+      const { data: byMeta } = await supabase
+        .from('dossiers')
+        .select('id, nom_client')
+        .eq('user_id', userId)
+        .contains('metadata', { case_reference: caseRef })
+        .limit(1)
+        .maybeSingle();
+
+      if (byMeta) {
+        dossierId = byMeta.id;
+        console.log(`Archiviste: dossier CASEREF trouvé (metadata) "${byMeta.nom_client}" (id: ${dossierId})`);
+      } else {
+        // Search by nom_client ILIKE
+        const { data: byNom } = await supabase
+          .from('dossiers')
+          .select('id, nom_client')
+          .eq('user_id', userId)
+          .ilike('nom_client', `%${caseRef}%`)
+          .limit(1)
+          .maybeSingle();
+
+        if (byNom) {
+          dossierId = byNom.id;
+          console.log(`Archiviste: dossier CASEREF trouvé (nom_client) "${byNom.nom_client}" (id: ${dossierId})`);
+        } else {
+          // Create new dossier for this CASEREF
+          const canonicalName = getCanonicalCaseName(caseRef);
+          const { data: newDossier, error: insertError } = await supabase
+            .from('dossiers')
+            .insert({
+              user_id: userId,
+              nom_client: canonicalName,
+              email_client: null,
+              statut: 'actif',
+              domaine: null,
+              dernier_echange_date: now,
+              dernier_echange_par: senderEmail,
+              metadata: { case_reference: caseRef },
+            })
+            .select('id')
+            .single();
+
+          if (insertError) {
+            console.error('Archiviste: erreur création dossier CASEREF:', insertError.message);
+          } else {
+            dossierId = newDossier.id;
+            console.log(`Archiviste: nouveau dossier CASEREF créé "${canonicalName}" (id: ${dossierId})`);
+          }
+        }
+      }
+
+      if (dossierId) {
+        // Update dernier_echange
+        await supabase
+          .from('dossiers')
+          .update({ dernier_echange_date: now, dernier_echange_par: senderEmail })
+          .eq('id', dossierId);
+
+        await supabase.from('emails').update({ dossier_id: dossierId }).eq('id', emailId);
+        return dossierId;
+      }
+    }
+
+    // ── Fallback 2: sender email match (legacy) ───────────────────────────────
     const { data: existingDossiers, error: lookupError } = await supabase
       .from('dossiers')
       .select('id, nom_client')
@@ -197,24 +292,20 @@ async function archiveEmail(emailId: string, senderEmail: string, senderName: st
       return null;
     }
 
-    let dossierId: string;
-
     if (existingDossiers && existingDossiers.length > 0) {
       dossierId = existingDossiers[0].id;
       const { error: updateError } = await supabase
         .from('dossiers')
-        .update({
-          dernier_echange_date: new Date().toISOString(),
-          dernier_echange_par: senderEmail,
-        })
+        .update({ dernier_echange_date: now, dernier_echange_par: senderEmail })
         .eq('id', dossierId);
 
       if (updateError) {
         console.error('Archiviste: erreur update dossier:', updateError.message);
       } else {
-        console.log('Dossier existant mis à jour pour ' + existingDossiers[0].nom_client + ' (id: ' + dossierId + ')');
+        console.log('Archiviste: dossier sender réutilisé pour ' + existingDossiers[0].nom_client + ' (id: ' + dossierId + ')');
       }
     } else {
+      // ── Fallback 3: create new dossier from sender ────────────────────────
       const { data: newDossier, error: insertError } = await supabase
         .from('dossiers')
         .insert({
@@ -223,7 +314,7 @@ async function archiveEmail(emailId: string, senderEmail: string, senderName: st
           email_client: senderEmail,
           statut: 'actif',
           domaine: null,
-          dernier_echange_date: new Date().toISOString(),
+          dernier_echange_date: now,
           dernier_echange_par: senderEmail,
         })
         .select('id')
@@ -234,16 +325,18 @@ async function archiveEmail(emailId: string, senderEmail: string, senderName: st
         return null;
       }
       dossierId = newDossier.id;
-      console.log('Nouveau dossier créé pour ' + senderName + ' (' + senderEmail + ') — id: ' + dossierId);
+      console.log('Archiviste: nouveau dossier sender créé pour ' + senderName + ' (' + senderEmail + ') — id: ' + dossierId);
     }
 
-    const { error: emailUpdateError } = await supabase
-      .from('emails')
-      .update({ dossier_id: dossierId })
-      .eq('id', emailId);
+    if (dossierId) {
+      const { error: emailUpdateError } = await supabase
+        .from('emails')
+        .update({ dossier_id: dossierId })
+        .eq('id', emailId);
 
-    if (emailUpdateError) {
-      console.error('Archiviste: erreur association email-dossier:', emailUpdateError.message);
+      if (emailUpdateError) {
+        console.error('Archiviste: erreur association email-dossier:', emailUpdateError.message);
+      }
     }
 
     return dossierId;
