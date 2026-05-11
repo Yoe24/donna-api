@@ -19,6 +19,7 @@ import chatRoutes from './routes/chat';
 import notificationRoutes from './routes/notifications';
 import calendarRoutes from './routes/calendar';
 import { v1CalendarRouter } from './v1/calendar';
+import integrationsRoutes from './routes/integrations';
 import { authMiddleware } from './middleware/auth';
 import { startGmailPolling } from './services/gmail-poller';
 import { startDailyBriefingCron } from './services/briefing-cron';
@@ -68,6 +69,9 @@ app.use('/api/auth', authMiddleware, authRoutes);
 app.use('/api/chat', authMiddleware, chatRoutes);
 app.use('/api/notifications', authMiddleware, notificationRoutes);
 app.use('/api/calendar-events', authMiddleware, calendarRoutes);
+
+// Integrations (OneDrive, Outlook Calendar)
+app.use('/api/integrations', authMiddleware, integrationsRoutes);
 
 // V1 Inbox to Calendar — isolated pipeline, parallel to existing dossiers.
 app.use('/api/v1/lab', v1CalendarRouter);

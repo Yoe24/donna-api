@@ -9,6 +9,8 @@ import { supabase } from '../config/supabase';
 import { randomBytes } from 'crypto';
 import { getOutlookAuthUrl, exchangeOutlookCode, OutlookProvider } from '../services/mail/outlook-provider';
 import { triggerDriveExport } from '../services/drive-exporter';
+import { triggerOneDriveExport } from '../services/onedrive-exporter';
+import { triggerOutlookCalendarExport } from '../services/outlook-calendar-exporter';
 import { isDemoResetUser, resetDemoUser } from '../services/demo-reset';
 
 const router = Router();
@@ -516,6 +518,16 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
       console.log(`[DemoReset/Outlook] Demo user detected: ${email} — resetting DB...`);
       await resetDemoUser(userId, refreshToken || null);
       console.log(`[DemoReset/Outlook] Reset complete for ${email} — proceeding as fresh user`);
+
+      // Auto-enable OneDrive + Outlook Calendar sync for demo user
+      await supabase
+        .from('configurations')
+        .update({
+          onedrive_sync_enabled: true,
+          outlook_calendar_sync_enabled: true,
+        })
+        .eq('user_id', userId);
+      console.log(`[DemoReset/Outlook] Auto-enabled OneDrive + Calendar sync for demo user ${email}`);
     }
 
     // 4. Generate magic link for frontend session
@@ -574,6 +586,14 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
       } catch (emailErr: any) {
         console.error('Outlook: email briefing erreur:', emailErr.message);
       }
+      // OneDrive export (fire-and-forget, Outlook users only)
+      triggerOneDriveExport(userId!).catch((e: any) =>
+        console.error('OneDrive export post-import erreur:', e.message)
+      );
+      // Outlook Calendar sync (fire-and-forget)
+      triggerOutlookCalendarExport(userId!).catch((e: any) =>
+        console.error('Outlook Calendar sync post-import erreur:', e.message)
+      );
     }).catch((err: any) => {
       importState.status = 'error';
       console.error('Outlook import erreur:', err.message);
