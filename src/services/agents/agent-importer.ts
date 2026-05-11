@@ -15,11 +15,13 @@ const BLACKLIST_NOMS_CLIENTS = [
   'donna', 'cabinet', 'sent', 'envoyé', 'envoye', 'inbox', 'reçu', 'recu',
   'me', 'moi', 'noreply', 'no-reply', 'donotreply', 'do-not-reply',
   'notifications', 'notification', 'support', 'info', 'contact',
+  'microsoft', 'équipe', 'equipe', 'greffe', 'tribunal', 'parquet',
+  'google', 'gmail', 'outlook', 'apple', 'amazon', 'linkedin', 'facebook',
 ];
 
 function isBlacklistedClient(nomClient: string): boolean {
   const normalized = nomClient.trim().toLowerCase();
-  return BLACKLIST_NOMS_CLIENTS.some((b) => normalized === b || normalized.startsWith(b + ' '));
+  return BLACKLIST_NOMS_CLIENTS.some((b) => normalized === b || normalized.startsWith(b + ' ') || normalized.includes(' ' + b + ' ') || normalized.includes(b + ' ') && normalized.indexOf(b) < 3);
 }
 
 // ─── Canonical case name mapping ─────────────────────────────────────────────
