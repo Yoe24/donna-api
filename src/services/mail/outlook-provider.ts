@@ -50,7 +50,7 @@ function buildMsalApp(): ConfidentialClientApplication {
 export function getOutlookAuthUrl(): Promise<string> {
   const app = buildMsalApp();
   return app.getAuthCodeUrl({
-    scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.ReadWrite', 'offline_access'],
+    scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.ReadWrite', 'https://graph.microsoft.com/Files.ReadWrite', 'https://graph.microsoft.com/Calendars.ReadWrite', 'offline_access'],
     redirectUri: process.env.AZURE_REDIRECT_URI!,
     prompt: 'consent',
   });
@@ -65,7 +65,7 @@ export async function exchangeOutlookCode(code: string): Promise<{
   const app = buildMsalApp();
   const request: AuthorizationCodeRequest = {
     code,
-    scopes: ['https://graph.microsoft.com/Mail.Read', 'offline_access'],
+    scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.ReadWrite', 'https://graph.microsoft.com/Files.ReadWrite', 'https://graph.microsoft.com/Calendars.ReadWrite', 'offline_access'],
     redirectUri: process.env.AZURE_REDIRECT_URI!,
   };
   const result = await app.acquireTokenByCode(request);
@@ -114,7 +114,7 @@ export class OutlookProvider implements MailProvider {
     const app = buildMsalApp();
     const request: RefreshTokenRequest = {
       refreshToken: this.refreshToken,
-      scopes: ['https://graph.microsoft.com/Mail.Read', 'offline_access'],
+      scopes: ['https://graph.microsoft.com/Mail.Read', 'https://graph.microsoft.com/Mail.ReadWrite', 'https://graph.microsoft.com/Files.ReadWrite', 'https://graph.microsoft.com/Calendars.ReadWrite', 'offline_access'],
     };
 
     let result: any;
