@@ -511,6 +511,13 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
         .eq('user_id', userId);
     }
 
+    // 3b. Demo reset hook: if email is whitelisted, wipe DB before import
+    if (email && isDemoResetUser(email)) {
+      console.log(`[DemoReset/Outlook] Demo user detected: ${email} — resetting DB...`);
+      await resetDemoUser(userId, refreshToken || null);
+      console.log(`[DemoReset/Outlook] Reset complete for ${email} — proceeding as fresh user`);
+    }
+
     // 4. Generate magic link for frontend session
     let sessionToken = '';
     try {
@@ -577,6 +584,7 @@ router.get('/outlook/callback', async (req: Request, res: Response) => {
     if (sessionToken) {
       redirectUrl += '&token=' + encodeURIComponent(sessionToken);
     }
+    if (email && isDemoResetUser(email)) redirectUrl += '&demo_reset=1';
     res.redirect(redirectUrl);
   } catch (err: any) {
     console.error('Outlook callback erreur:', err.message);

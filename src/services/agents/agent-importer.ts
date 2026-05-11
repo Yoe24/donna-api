@@ -22,32 +22,34 @@ function isBlacklistedClient(nomClient: string): boolean {
   return BLACKLIST_NOMS_CLIENTS.some((b) => normalized === b || normalized.startsWith(b + ' '));
 }
 
-// ─── Case reference extraction from email subject ─────────────────────────────
-// Pattern: "[CASE_REF] — description" or "[CASE_REF] - description" or "[CASE_REF] : description"
-// Returns uppercase canonical reference like "BELAIR", "TECHFLOW", "BELLINI", etc.
-export function extractCaseReference(subject: string): string | null {
-  if (!subject) return null;
-  // Split on em-dash, en-dash, colon, or hyphen (with optional spaces)
-  const separators = /\s*[—–:]\s*|\s+-\s+/;
-  const parts = subject.split(separators);
-  if (parts.length < 2) return null;
-  const ref = parts[0].trim().toUpperCase();
-  // Must be non-empty and not a pure number
-  if (!ref || /^\d+$/.test(ref)) return null;
-  // Must be reasonably short (a case name, not a long sentence)
-  if (ref.length > 50) return null;
-  return ref;
-}
-
 // ─── Canonical case name mapping ─────────────────────────────────────────────
+// Whitelist of known case keywords (uppercase, accent-stripped).
+// extractCaseReference scans the FULL subject for any of these keywords
+// (not just the prefix) and returns the canonical name.
+// Anything outside this whitelist returns null → fallback to sender-based grouping.
 const CANONICAL_CASE_NAMES: Record<string, string> = {
   'BELAIR': 'BELAIR Distribution',
   'TECHFLOW': 'TechFlow SAS',
+  'TECH FLOW': 'TechFlow SAS',
   'BELLINI': 'Bellini SAS',
   'MARLOT': 'MARLOT Industrie',
   'LUMIERE': 'LUMIERE Cosmétiques',
   'LUMIÈRE': 'LUMIERE Cosmétiques',
+  'LUMIERES': 'LUMIERE Cosmétiques',
 };
+
+export function extractCaseReference(subject: string): string | null {
+  if (!subject) return null;
+  const upper = subject.toUpperCase();
+  for (const keyword of Object.keys(CANONICAL_CASE_NAMES)) {
+    // Word boundary match (start of string, after whitespace, after punctuation)
+    const re = new RegExp(`(^|[^A-Z0-9])${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Z0-9]|$)`);
+    if (re.test(upper)) {
+      return keyword;
+    }
+  }
+  return null;
+}
 
 function getCanonicalCaseName(caseRef: string): string {
   return CANONICAL_CASE_NAMES[caseRef] || caseRef;
