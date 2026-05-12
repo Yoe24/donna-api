@@ -76,3 +76,21 @@ export function statutFromPipelineStep(step: PipelineStep): Statut {
 export function isPipelineTerminal(step: PipelineStep | string | null): boolean {
   return step === 'pret_a_reviser' || step === 'ignore';
 }
+
+// ─── direction ────────────────────────────────────────────────────────────
+//
+// Provenance d'un email vu depuis l'avocat :
+//   'received' = mail entrant (inbox) — peut nécessiter une réponse
+//   'sent'     = mail sortant (envoyé par l'avocat) — alimente le contexte
+//                bidirectionnel, le style detector et le calendrier
+//
+// Ajouté en BDD via migrations/2026-05-12-email-direction.sql (NOT NULL,
+// default 'received', index partiel sur direction='sent').
+//
+// Le frontend (Phase 1 brouillon-mail) utilise ce flag pour :
+//   - afficher le bouton "Brouillon" uniquement sur direction='received'
+//   - badge direction sur la fiche email
+//   - filtrer les fils bidirectionnels d'un dossier
+
+export const EMAIL_DIRECTIONS = ['received', 'sent'] as const;
+export type EmailDirection = (typeof EMAIL_DIRECTIONS)[number];
