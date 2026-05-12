@@ -67,7 +67,13 @@ router.get('/gmail/auth', (req: Request, res: Response) => {
     access_type: 'offline',
     prompt: 'consent',
     scope: [
-      'https://www.googleapis.com/auth/gmail.readonly',
+      // gmail.modify : lecture + insert + label changes + delete.
+      // Élargi depuis gmail.readonly pour permettre :
+      //   - Injection de sent factices (test démo)
+      //   - Phase 1 : sauvegarde de brouillons via API Gmail (drafter mail)
+      // Pour envoyer réellement un mail (Phase 1.5), il faudra aussi
+      // ajouter 'gmail.send' — pas requis pour ce stade.
+      'https://www.googleapis.com/auth/gmail.modify',
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile',
       'https://www.googleapis.com/auth/drive.file',
