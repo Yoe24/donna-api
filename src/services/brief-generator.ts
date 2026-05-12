@@ -156,9 +156,20 @@ export async function generateBrief(
     return await saveBrief(userId, emptyBrief);
   }
 
-  // 2. Pour chaque dossier, récupérer les emails récents
+  // 2. Compteur canonique : total emails reçus dans la période.
+  // Une seule source de vérité. Pas de cumul par dossier (qui sous-estime
+  // à cause de la limite 20/dossier et exclut les emails sans dossier_id).
+  // Pas de filtre pipeline_step : on compte le VOLUME reçu, pas le volume traité.
+  const { count: emailsInPeriod } = await supabase
+    .from('emails')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .gte('created_at', cutoffDate);
+  const totalEmailsInPeriod = emailsInPeriod ?? 0;
+
+  // 3. Pour chaque dossier, récupérer les emails récents (pour le narrative LLM)
   const dossierSummaries: DossierSummary[] = [];
-  let totalEmails = 0;
+  let dossierEmailsCount = 0; // somme par dossier — utilisé pour le narrative, pas pour les stats finales
   let needsResponseCount = 0;
   let deadlineSoonCount = 0;
 
@@ -185,7 +196,7 @@ export async function generateBrief(
 
     if (!emails || emails.length === 0) continue;
 
-    totalEmails += emails.length;
+    dossierEmailsCount += emails.length;
 
     (emails as Email[]).forEach((e) => {
       if (e.needs_response === true) needsResponseCount++;
@@ -337,7 +348,7 @@ export async function generateBrief(
             role: 'user',
             content:
               'Total emails: ' +
-              totalEmails +
+              totalEmailsInPeriod +
               '\nTotal dossiers avec activité: ' +
               dossierSummaries.length +
               '\n\nDossiers :\n' +
@@ -352,7 +363,7 @@ export async function generateBrief(
       const message = execErr instanceof Error ? execErr.message : String(execErr);
       console.error('❌ Brief exec summary error:', message);
       executiveSummary =
-        'Vous avez reçu ' + totalEmails + ' emails sur ' + dossierSummaries.length + ' dossiers.';
+        'Vous avez reçu ' + totalEmailsInPeriod + ' emails sur ' + dossierSummaries.length + ' dossiers.';
     }
   } else {
     executiveSummary = 'Aucune activité récente détectée sur vos dossiers.';
@@ -363,7 +374,7 @@ export async function generateBrief(
     executive_summary: executiveSummary,
     is_first_brief: periodDays > 7,
     stats: {
-      emails_analyzed: totalEmails,
+      emails_analyzed: totalEmailsInPeriod,
       dossiers_count: dossierSummaries.length,
       needs_response_count: needsResponseCount,
       deadline_soon_count: deadlineSoonCount,
@@ -372,7 +383,12 @@ export async function generateBrief(
   };
 
   const savedBrief = await saveBrief(userId, briefContent);
-  console.log('📋 Brief généré avec succès:', totalEmails, 'emails,', dossierSummaries.length, 'dossiers');
+  console.log(
+    '📋 Brief généré avec succès:',
+    totalEmailsInPeriod, 'emails reçus dans la période (',
+    dossierEmailsCount, 'rattachés à un dossier),',
+    dossierSummaries.length, 'dossiers',
+  );
   return savedBrief;
 }
 
