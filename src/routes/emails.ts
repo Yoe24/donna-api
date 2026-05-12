@@ -77,11 +77,13 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(400).json({ error: 'user_id requis' });
 
+    // Exclude raw imported emails not yet processed by the AI pipeline.
+    // Accept both legacy 'importe' (FR, no longer written) and 'imported' (EN).
     const { data, error } = await supabase
       .from('emails')
       .select('*')
       .eq('user_id', userId)
-      .neq('pipeline_step', 'importe')
+      .not('pipeline_step', 'in', '(importe,imported)')
       .order('created_at', { ascending: false })
       .limit(500);
 
@@ -100,8 +102,10 @@ router.get('/', async (req: AuthenticatedRequest, res: Response) => {
       }
     }
 
-    const actifs = emails.filter((e: any) => e.pipeline_step !== 'filtre_rejete');
-    const filtres = emails.filter((e: any) => e.pipeline_step === 'filtre_rejete');
+    // Pipeline_step 'ignore' = filtered by AI as non-pertinent. They come last
+    // in the list so the lawyer sees actionable mails first.
+    const actifs = emails.filter((e: any) => e.pipeline_step !== 'ignore');
+    const filtres = emails.filter((e: any) => e.pipeline_step === 'ignore');
     const sorted = [...actifs, ...filtres];
 
     res.json(sorted.map((e: any) => transformEmail(e, dossierMap)));
@@ -120,17 +124,17 @@ router.get('/stats', async (req: AuthenticatedRequest, res: Response) => {
       .from('emails')
       .select('statut, pipeline_step')
       .eq('user_id', userId)
-      .neq('pipeline_step', 'importe');
+      .not('pipeline_step', 'in', '(importe,imported)');
 
     if (error) return res.status(500).json({ error: error.message });
     const emails = all || [];
-    const actifs = emails.filter((e: any) => e.pipeline_step !== 'filtre_rejete');
-    const filtres = emails.filter((e: any) => e.pipeline_step === 'filtre_rejete');
+    // 'ignore' = filtered by AI. Anything else is "actif" (in pipeline or reviewable).
+    const actifs = emails.filter((e: any) => e.pipeline_step !== 'ignore');
+    const filtres = emails.filter((e: any) => e.pipeline_step === 'ignore');
 
     res.json({
       recus: actifs.length,
       traites: actifs.filter((e: any) => e.statut === 'traite' || e.pipeline_step === 'pret_a_reviser').length,
-      valides: actifs.filter((e: any) => e.statut === 'valide').length,
       en_attente: actifs.filter((e: any) => e.statut === 'en_attente').length,
       filtres: filtres.length,
     });
@@ -345,7 +349,7 @@ router.post('/reprocess', async (req: AuthenticatedRequest, res: Response) => {
       .from('emails')
       .select('id, objet, expediteur, metadata')
       .eq('user_id', userId)
-      .in('pipeline_step', ['importe', 'en_attente'])
+      .in('pipeline_step', ['importe', 'imported', 'en_attente'])
       .order('created_at', { ascending: true });
 
     if (error) return res.status(500).json({ error: error.message });

@@ -33,13 +33,13 @@ async function computeStatsForPeriod(userId: string, cutoffDate: string): Promis
     .gte('created_at', cutoffDate);
   dossierEmailCount = (dossierEmails || []).length;
 
-  // Emails avec dossier_id null (hors pipeline_step='importe')
+  // Emails avec dossier_id null (hors emails encore en backlog d'import : 'importe' ou 'imported')
   const { data: generalEmails } = await supabase
     .from('emails')
     .select('id')
     .eq('user_id', userId)
     .is('dossier_id', null)
-    .neq('pipeline_step', 'importe')
+    .not('pipeline_step', 'in', '(importe,imported)')
     .gte('created_at', cutoffDate);
   generalEmailCount = (generalEmails || []).length;
 

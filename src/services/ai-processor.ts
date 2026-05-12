@@ -7,6 +7,7 @@ import { enrichDossier } from './dossier-enricher';
 import { extractDatesFromEmail } from './date-extractor';
 import { triggerDriveExport } from './drive-exporter';
 import { loadDossierTokens, matchSubjectAgainstTokens } from './case-matcher';
+import { PipelineStep, statutFromPipelineStep } from '../types/email-status';
 
 // Case-name lookup is now dynamic via case-matcher (no more hard-coded whitelist).
 
@@ -366,11 +367,14 @@ async function enrichEmailClassification(emailId: string, emailData: EmailData) 
   }
 }
 
-async function updatePipelineStep(emailId: string, step: string) {
+async function updatePipelineStep(emailId: string, step: PipelineStep) {
   console.log('Pipeline step: ' + step);
+  // Keep statut in sync with pipeline_step (Bug #6 in PIPELINE_AUDIT.md).
+  // statutFromPipelineStep maps every pipeline state to its canonical statut,
+  // so the two columns never drift apart on AI-driven updates.
   const { error } = await supabase
     .from('emails')
-    .update({ pipeline_step: step })
+    .update({ pipeline_step: step, statut: statutFromPipelineStep(step) })
     .eq('id', emailId);
   if (error) {
     console.error('Failed to update pipeline step:', error);

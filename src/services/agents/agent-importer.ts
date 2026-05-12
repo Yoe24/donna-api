@@ -456,7 +456,12 @@ async function importMail(
     console.log(`🤖 Aucun email récent (< 24h) à traiter par l'IA`);
   }
 
-  // Mark older emails as processed (no AI for old ones)
+  // Older emails (> 24h) are part of the historical backlog. We don't run the
+  // AI pipeline on them (would be expensive and rarely actionable), and we
+  // mark statut='traite' so they don't appear in the lawyer's TODO list.
+  // Intentional divergence from statutFromPipelineStep('imported') = 'en_attente' :
+  // the canonical mapping applies on pipeline transitions, not on bulk-archive
+  // operations like this one.
   await supabase
     .from('emails')
     .update({ pipeline_step: 'imported', statut: 'traite' })
