@@ -9,6 +9,8 @@ import { uploadToStorage, generateAttachmentSummary } from './attachment-process
 import { GmailProvider } from './mail/gmail-provider';
 import { OutlookProvider } from './mail/outlook-provider';
 import { TokenInvalidError, MailProvider } from './mail/types';
+import { loadDossierTokens, matchSubjectAgainstTokens } from './case-matcher';
+import { extractDatesFromEmail } from './date-extractor';
 
 const POLL_INTERVAL = 30000; // 30 secondes
 
@@ -22,6 +24,18 @@ let pollingTimer: ReturnType<typeof setInterval> | null = null;
 interface ExtractedText {
   filename: string;
   text: string;
+}
+
+// Extracts lowercase email address from a "Name <email@host>" header.
+// Used for SENT messages where the counterpart is the recipient (full.to),
+// not the sender (full.from = lawyer themselves).
+// Dupliqué depuis agent-importer.ts pour éviter un cross-import — à
+// extraire dans un module utility si la duplication se multiplie.
+function extractToEmail(toHeader: string): string {
+  if (!toHeader) return '';
+  const m = toHeader.match(/<([^>]+)>/);
+  if (m) return m[1].trim().toLowerCase();
+  return toHeader.trim().toLowerCase();
 }
 
 // ─── Attachment processing (provider-agnostic) ───────────────────────────────
@@ -116,8 +130,10 @@ async function checkNewEmailsForUser(
     sinceDate = new Date(Date.now() - 3600000);
   }
 
-  let newCount = 0;
+  let newReceivedCount = 0;
+  let newSentCount = 0;
 
+  // ── Inbox (received) ──────────────────────────────────────────────────────
   for await (const rawMsg of provider.listMessagesSince(sinceDate, 50)) {
     try {
       const { data: existing } = await supabase
@@ -141,6 +157,7 @@ async function checkNewEmailsForUser(
           brouillon: null,
           pipeline_step: 'en_attente',
           statut: 'en_attente',
+          direction: 'received',
           contexte_choisi: 'standard',
           metadata: { [metadataKey]: rawMsg.id },
         })
@@ -148,11 +165,11 @@ async function checkNewEmailsForUser(
         .single();
 
       if (insertError) {
-        console.error(`❌ ${providerName} poll insert error:`, insertError.message);
+        console.error(`❌ ${providerName} poll insert error (received):`, insertError.message);
         continue;
       }
 
-      console.log(`📬 Nouvel email ${providerName} (user ${userId.substring(0, 8)}): ${full.subject} (de ${full.from})`);
+      console.log(`📬 Nouvel email reçu ${providerName} (user ${userId.substring(0, 8)}): ${full.subject} (de ${full.from})`);
 
       processEmailWithAI(email.id, {
         subject: full.subject,
@@ -179,10 +196,110 @@ async function checkNewEmailsForUser(
         console.error(`❌ AI processing error (${providerName} poll):`, err.message);
       });
 
-      newCount++;
+      newReceivedCount++;
     } catch (msgErr: any) {
       if (msgErr instanceof TokenInvalidError) throw msgErr; // bubble up
-      console.error(`❌ ${providerName} poll message error:`, msgErr.message);
+      console.error(`❌ ${providerName} poll message error (received):`, msgErr.message);
+    }
+  }
+
+  // ── Sent (Chantier B) ─────────────────────────────────────────────────────
+  // Pipeline réduit (décision Yoel Q2) : match dossier + dates regex + PJ.
+  // Pas de filter (sans intérêt), pas de drafter (absurde sur un mail
+  // envoyé). statut='traite' direct — n'apparaît pas dans la TODO.
+  for await (const rawMsg of provider.listSentMessages(sinceDate, 50)) {
+    try {
+      const { data: existing } = await supabase
+        .from('emails')
+        .select('id')
+        .eq('user_id', userId)
+        .contains('metadata', { [metadataKey]: rawMsg.id })
+        .limit(1);
+
+      if (existing && existing.length > 0) continue;
+
+      const full = await provider.getFullMessage(rawMsg.id);
+
+      // Match dossier: subject d'abord, fallback sur email destinataire.
+      const tokens = await loadDossierTokens(userId);
+      const subjectMatch = matchSubjectAgainstTokens(full.subject, tokens);
+      let dossierId: string | null = subjectMatch?.dossierId || null;
+      if (!dossierId) {
+        const toEmail = extractToEmail(full.to);
+        if (toEmail) {
+          const { data: dossier } = await supabase
+            .from('dossiers')
+            .select('id')
+            .eq('user_id', userId)
+            .ilike('email_client', toEmail)
+            .maybeSingle();
+          dossierId = dossier?.id || null;
+        }
+      }
+
+      const { data: email, error: insertError } = await supabase
+        .from('emails')
+        .insert({
+          user_id: userId,
+          expediteur: full.from,
+          objet: full.subject,
+          contenu: full.body || null,
+          resume: full.body ? full.body.substring(0, 200) : null,
+          brouillon: null,
+          pipeline_step: 'imported',
+          statut: 'traite',
+          direction: 'sent',
+          dossier_id: dossierId,
+          contexte_choisi: 'standard',
+          metadata: { [metadataKey]: rawMsg.id },
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error(`❌ ${providerName} poll insert error (sent):`, insertError.message);
+        continue;
+      }
+
+      console.log(`📤 Mail envoyé ${providerName} (user ${userId.substring(0, 8)}): ${full.subject} (à ${full.to}) → dossier=${dossierId?.substring(0, 8) || 'aucun'}`);
+
+      if (dossierId) {
+        // Fire-and-forget : attachments + extract dates regex only.
+        (async () => {
+          try {
+            if (full.attachments.length > 0) {
+              await processProviderAttachments(provider, rawMsg.id, full.attachments, dossierId, email.id, userId);
+            }
+            const events = await extractDatesFromEmail({
+              emailBody: full.body || '',
+              emailSubject: full.subject || '',
+              useLLMFallback: false,
+            });
+            if (events.length > 0) {
+              const rows = events.map((evt) => ({
+                dossier_id: dossierId,
+                user_id: userId,
+                date_start: evt.dateStart,
+                date_end: evt.dateEnd ?? null,
+                title: evt.title,
+                description: evt.description ?? null,
+                source_type: evt.sourceType,
+                source_id: email.id,
+                source_filename: evt.sourceFilename ?? null,
+                confidence: evt.confidence,
+              }));
+              await supabase.from('calendar_events').insert(rows);
+            }
+          } catch (err: any) {
+            console.error(`❌ ${providerName} sent processing error:`, err.message);
+          }
+        })();
+      }
+
+      newSentCount++;
+    } catch (msgErr: any) {
+      if (msgErr instanceof TokenInvalidError) throw msgErr; // bubble up
+      console.error(`❌ ${providerName} poll message error (sent):`, msgErr.message);
     }
   }
 
@@ -191,8 +308,8 @@ async function checkNewEmailsForUser(
     .update({ [lastCheckField]: new Date().toISOString() })
     .eq('user_id', userId);
 
-  if (newCount > 0) {
-    console.log(`📬 ${providerName} poll (user ${userId.substring(0, 8)}): ${newCount} nouveaux emails traités`);
+  if (newReceivedCount > 0 || newSentCount > 0) {
+    console.log(`📬 ${providerName} poll (user ${userId.substring(0, 8)}): ${newReceivedCount} received + ${newSentCount} sent traités`);
   }
 }
 
