@@ -46,6 +46,12 @@ const DATE_KEYWORDS = [
   "aujourd'hui", 'hier',
 ];
 
+// Window of valid dates relative to "now" : keep dates from 30 days ago to
+// 24 months ahead. Anything outside is most likely a historical reference
+// (e.g. "the 2022 OEB opposition") wrongly extracted as an event.
+const DEFAULT_WINDOW_PAST_DAYS = 30;
+const DEFAULT_WINDOW_FUTURE_DAYS = 730; // ~24 months
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -166,6 +172,27 @@ function buildDescription(
   const start = Math.max(0, matchIndex - 80);
   const end = Math.min(text.length, matchIndex + matchLength + 80);
   return text.substring(start, end).trim().substring(0, 200);
+}
+
+/**
+ * Returns true if the ISO date string falls within the valid extraction window.
+ * Defense against hallucinated or historical dates that should not pollute the
+ * upcoming-events calendar.
+ */
+function isDateInValidWindow(
+  dateISO: string,
+  referenceDate: Date,
+  pastDays: number = DEFAULT_WINDOW_PAST_DAYS,
+  futureDays: number = DEFAULT_WINDOW_FUTURE_DAYS,
+): boolean {
+  const parsed = Date.parse(dateISO);
+  if (Number.isNaN(parsed)) return false;
+  const ageMs = referenceDate.getTime() - parsed;
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+  // ageDays > 0 → date in the past, > 0 → past distance ; < 0 → future distance
+  if (ageDays > pastDays) return false;        // too old
+  if (-ageDays > futureDays) return false;     // too far in the future
+  return true;
 }
 
 // ─── Core regex pass ──────────────────────────────────────────────────────────
@@ -290,15 +317,35 @@ async function llmExtractDates(
   referenceDate: Date,
 ): Promise<ExtractedDateEvent[]> {
   const todayISO = referenceDate.toISOString().substring(0, 10);
+  // Compute window bounds for the prompt (informative — the LLM doesn't need
+  // to do math, just respect the bounds we hand it).
+  const minDate = new Date(referenceDate.getTime() - DEFAULT_WINDOW_PAST_DAYS * 86400000)
+    .toISOString().substring(0, 10);
+  const maxDate = new Date(referenceDate.getTime() + DEFAULT_WINDOW_FUTURE_DAYS * 86400000)
+    .toISOString().substring(0, 10);
 
   const systemPrompt =
-    `Tu es un extracteur de dates juridiques. ` +
-    `Aujourd'hui : ${todayISO}. Fuseau horaire : Europe/Paris. ` +
-    `Réponds UNIQUEMENT avec un tableau JSON valide (pas de markdown). ` +
-    `Format : [{\"date\":\"YYYY-MM-DDTHH:mm:ss+HH:MM\",\"title\":\"...\",\"description\":\"...\"}]. ` +
-    `Extrais UNIQUEMENT les dates exprimées en langage naturel (demain, la semaine prochaine, lundi prochain, etc.). ` +
-    `Ne pas ré-extraire les dates explicites déjà au format DD/MM/YYYY, DD mois YYYY ou YYYY-MM-DD. ` +
-    `Si aucune date naturelle trouvée, renvoie [].`;
+    `Tu es un extracteur de dates juridiques. Fuseau : Europe/Paris.\n\n` +
+    `RÉFÉRENTIEL TEMPOREL :\n` +
+    `- Aujourd'hui : ${todayISO}\n` +
+    `- Fenêtre valide : du ${minDate} au ${maxDate}\n` +
+    `- TOUTE date hors fenêtre = ignorer (probable référence historique, pas une échéance à planifier)\n\n` +
+    `CRITÈRES D'EXTRACTION :\n` +
+    `Tu extrais UNIQUEMENT les ÉVÉNEMENTS FUTURS À PLANIFIER : audience, RDV, signature, closing, échéance procédurale, deadline de dépôt, réunion programmée.\n` +
+    `Tu N'EXTRAIS PAS les références historiques mentionnées pour rappel ou contexte.\n\n` +
+    `EXEMPLES :\n` +
+    `✅ "L'audience est fixée au mardi 12 mai à 14h" → extraire\n` +
+    `✅ "RDV demain 10h dans mon bureau" → extraire\n` +
+    `❌ "Pour mémoire, l'opposition OEB de 2022 a été rejetée" → NE PAS extraire (historique)\n` +
+    `❌ "Le contrat signé en 2019 prévoit que..." → NE PAS extraire (référence)\n` +
+    `❌ "Nous renouvelons l'accord de mars 2024" → NE PAS extraire (passé)\n\n` +
+    `LANGAGE :\n` +
+    `Tu extrais surtout les dates en langage naturel (demain, lundi prochain, la semaine prochaine).\n` +
+    `Les dates explicites (DD/MM/YYYY, DD mois YYYY, YYYY-MM-DD) sont déjà extraites par un autre passage — ne les ré-extrais pas.\n\n` +
+    `FORMAT DE SORTIE :\n` +
+    `Tableau JSON pur (pas de markdown, pas de texte autour).\n` +
+    `[{"date":"YYYY-MM-DDTHH:mm:ss+02:00","title":"...","description":"..."}]\n` +
+    `Si aucune date à extraire, renvoie [].`;
 
   const userContent =
     `Objet : ${emailSubject}\n` +
@@ -383,6 +430,10 @@ export async function extractDatesFromEmail(input: {
   useLLMFallback?: boolean;
   /** Override reference date (useful for deterministic tests). Defaults to now(). */
   _referenceDate?: Date;
+  /** Override valid window (days in the past). Default 30. */
+  windowPastDays?: number;
+  /** Override valid window (days in the future). Default 730 (~24 months). */
+  windowFutureDays?: number;
 }): Promise<ExtractedDateEvent[]> {
   const {
     emailBody,
@@ -391,6 +442,8 @@ export async function extractDatesFromEmail(input: {
     dossierContext,
     useLLMFallback = true,
     _referenceDate,
+    windowPastDays = DEFAULT_WINDOW_PAST_DAYS,
+    windowFutureDays = DEFAULT_WINDOW_FUTURE_DAYS,
   } = input;
 
   const referenceDate = _referenceDate ?? new Date();
@@ -425,6 +478,15 @@ export async function extractDatesFromEmail(input: {
     }
   }
 
-  // ── 4. Deduplicate
-  return deduplicateEvents(allEvents);
+  // ── 4. Filter by valid window (drop historical and far-future hallucinations)
+  const inWindowEvents = allEvents.filter((ev) => {
+    const ok = isDateInValidWindow(ev.dateStart, referenceDate, windowPastDays, windowFutureDays);
+    if (!ok) {
+      console.warn(`[date-extractor] dropping out-of-window event: ${ev.dateStart} — title="${ev.title.substring(0, 80)}"`);
+    }
+    return ok;
+  });
+
+  // ── 5. Deduplicate
+  return deduplicateEvents(inWindowEvents);
 }
