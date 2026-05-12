@@ -66,7 +66,6 @@ interface MergeResult {
 }
 
 interface DossierUpdateData {
-  nom_client: string;
   email_count: number;
   opposing_party?: string;
   case_reference?: string;
@@ -213,10 +212,26 @@ export async function mergeDossiers(userId: string): Promise<MergeResult> {
       continue;
     }
 
-    const primaryId = validIds[0];
-    const secondaryIds = validIds.slice(1);
+    // Pick the most canonical dossier as primary :
+    // 1. Has case_reference set (strongest canonical signal)
+    // 2. Has the longest resume_situation (richest context)
+    // 3. Fallback to first one in the group
+    const rankedIds = [...validIds].sort((a, b) => {
+      const dA = dossiersData.find((d) => d.id === a)!;
+      const dB = dossiersData.find((d) => d.id === b)!;
+      const rA = (dossiers as DossierRow[]).find((d) => d.id === a)!;
+      const rB = (dossiers as DossierRow[]).find((d) => d.id === b)!;
+      const caseA = rA.case_reference ? 1 : 0;
+      const caseB = rB.case_reference ? 1 : 0;
+      if (caseA !== caseB) return caseB - caseA;
+      const lenA = (dA.resume_situation || "").length;
+      const lenB = (dB.resume_situation || "").length;
+      return lenB - lenA;
+    });
+    const primaryId = rankedIds[0];
+    const secondaryIds = rankedIds.slice(1);
 
-    console.log("🔀 Fusionner: " + group.merged_name + " (" + validIds.length + " dossiers → 1)");
+    console.log("🔀 Fusionner: " + group.merged_name + " (" + validIds.length + " dossiers → 1, primary: " + primaryId.substring(0, 8) + ")");
 
     // a. Rattacher les emails des dossiers secondaires au dossier principal
     if (secondaryIds.length > 0) {
@@ -239,8 +254,12 @@ export async function mergeDossiers(userId: string): Promise<MergeResult> {
       .eq("dossier_id", primaryId);
 
     // c. Mettre à jour le dossier principal
+    // IMPORTANT : on ne renomme JAMAIS nom_client ici. Le merge enrichit (case_reference,
+    // opposing_party, domaine, resume_situation) mais ne touche pas au nom du dossier.
+    // Raison : GPT-4o hallucine régulièrement des renames destructifs (TechFlow SAS → Holding
+    // Lumens SAS) à chaque OAuth. Pour corriger un nom auto-bizarre, utiliser un endpoint
+    // dédié avec confirmation humaine (à venir).
     const updateData: DossierUpdateData = {
-      nom_client: group.client_name || group.merged_name,
       email_count: emailCount || 0,
     };
     if (group.opposing_party) updateData.opposing_party = group.opposing_party;
