@@ -4,6 +4,7 @@ import {
   uploadToStorage,
 } from '../attachment-processor';
 import { processEmailWithAI } from '../ai-processor';
+import { extractDatesFromEmail } from '../date-extractor';
 import { MailProvider, FullMessage, AttachmentMeta } from '../mail/types';
 import { GmailProvider } from '../mail/gmail-provider';
 import {
@@ -83,6 +84,16 @@ function extractName(header: string): string {
   return m ? m[1].trim().replace(/"/g, '') : header.trim();
 }
 
+// Extracts lowercase email address from a "Name <email@host>" header (or plain
+// "email@host"). Used for SENT emails where the counterpart is the recipient
+// (em.to) rather than the sender (which is the lawyer themselves).
+function extractToEmail(toHeader: string): string {
+  if (!toHeader) return '';
+  const m = toHeader.match(/<([^>]+)>/);
+  if (m) return m[1].trim().toLowerCase();
+  return toHeader.trim().toLowerCase();
+}
+
 function detectStyle(sentEmails: EmailObj[]): {
   appel: string;
   politesse: string;
@@ -137,18 +148,35 @@ async function importMail(
     );
   }
 
-  const after = new Date(Date.now() - 60 * 24 * 3600 * 1000);
+  const after = new Date(Date.now() - 90 * 24 * 3600 * 1000);
 
-  // ── Step 1: Collect all message IDs ──────────────────────────────────────
-  console.log(`📥 agent-importer [${provider.name}]: listing messages depuis 60 jours...`);
+  // ── Step 1: Collect message IDs from inbox + sent ────────────────────────
+  console.log(`📥 agent-importer [${provider.name}]: listing messages depuis 90 jours (inbox + sent)...`);
   const allMessageIds: string[] = [];
+  const seenIds = new Set<string>();
 
   for await (const raw of provider.listMessagesSince(after, MAX_EMAILS)) {
-    allMessageIds.push(raw.id);
+    if (!seenIds.has(raw.id)) {
+      allMessageIds.push(raw.id);
+      seenIds.add(raw.id);
+    }
+  }
+  const inboxCount = allMessageIds.length;
+
+  // Chantier B: import des mails envoyés pour contexte bidirectionnel et
+  // détection de style. isSent est rempli par getFullMessage (label SENT côté
+  // Gmail, absence de receivedDateTime côté Outlook).
+  let sentRawCount = 0;
+  for await (const raw of provider.listSentMessages(after, MAX_EMAILS)) {
+    sentRawCount++;
+    if (!seenIds.has(raw.id)) {
+      allMessageIds.push(raw.id);
+      seenIds.add(raw.id);
+    }
   }
 
   const total = allMessageIds.length;
-  console.log(`📥 agent-importer [${provider.name}]: ${total} messages à traiter`);
+  console.log(`📥 agent-importer [${provider.name}]: ${inboxCount} inbox + ${sentRawCount} sent → ${total} unique messages à traiter`);
   if (onProgress) onProgress({ processed: 0, total, dossiers_created: 0, attachments_count: 0 });
 
   // ── Step 2: Fetch full messages ───────────────────────────────────────────
@@ -212,8 +240,10 @@ async function importMail(
       byDossier[match.dossierId].push(em);
       dossierMap[match.dossierId] = match.dossierId;
     } else {
-      // Legacy fallback: group by sender (creates new dossier if first time seeing this sender)
-      const key = em.fromEmail;
+      // Fallback: group by counterpart email.
+      // Pour les sent, em.fromEmail est l'avocat — inutile pour identifier
+      // le client. On utilise donc le destinataire (em.to).
+      const key = em.isSent ? extractToEmail(em.to) : em.fromEmail;
       if (!key) continue;
       if (!bySender[key]) bySender[key] = [];
       bySender[key].push(em);
@@ -249,7 +279,9 @@ async function importMail(
     try {
       group.sort((a, b) => b.date.getTime() - a.date.getTime());
       const latest = group[0];
-      const nomClient = extractName(latest.from) || senderEmail;
+      // Pour les sent, latest.from est l'avocat — on prend le destinataire.
+      const counterpartHeader = latest.isSent ? latest.to : latest.from;
+      const nomClient = extractName(counterpartHeader) || senderEmail;
 
       // Skip blacklisted names (false positives: "Donna", "Cabinet", "Sent"…)
       if (isBlacklistedClient(nomClient)) {
@@ -302,9 +334,11 @@ async function importMail(
   for (let j = 0; j < emails.length; j++) {
     const em = emails[j];
     try {
-      // Subject-match takes priority over sender for dossier assignment
+      // Subject-match takes priority over counterpart for dossier assignment.
+      // Counterpart = sender for received, recipient for sent.
       const match = matchSubjectAgainstTokens(em.subject, dossierTokens);
-      const dossierId = (match && dossierMap[match.dossierId]) || dossierMap[em.fromEmail] || null;
+      const counterpartEmail = em.isSent ? extractToEmail(em.to) : em.fromEmail;
+      const dossierId = (match && dossierMap[match.dossierId]) || dossierMap[counterpartEmail] || null;
 
       if (em.providerId) {
         const { data: existingEmail } = await supabase
@@ -329,6 +363,7 @@ async function importMail(
           pipeline_step: 'imported',
           statut: 'en_attente',
           dossier_id: dossierId,
+          direction: em.isSent ? 'sent' : 'received',
           contexte_choisi: 'standard',
           created_at: em.date.toISOString(),
           metadata: { [metadataKey]: em.providerId },
@@ -417,19 +452,24 @@ async function importMail(
     }
   }
 
-  // ── Step 6: AI pipeline on recent emails (< 24h) ─────────────────────────
-  const twentyFourHoursAgo = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-  console.log(`🤖 agent-importer [${provider.name}]: pipeline IA sur les emails récents (< 24h)...`);
+  // ── Step 6: AI pipeline on recent RECEIVED emails (< 7j) ─────────────────
+  // Décision Yoel (Q1): full-pipeline limité à 7j pour limiter le coût LLM
+  // sur le backfill 90j (~$8 pour 7j vs ~$108 pour 90j).
+  // Décision Yoel (Q2): les sent ne passent JAMAIS par processEmailWithAI
+  // (filter et drafter sans valeur sur un mail envoyé).
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  console.log(`🤖 agent-importer [${provider.name}]: pipeline IA sur les received récents (< 7j)...`);
   const { data: recentEmails } = await supabase
     .from('emails')
     .select('id, objet, expediteur, metadata')
     .eq('user_id', uid)
     .eq('pipeline_step', 'imported')
-    .gte('created_at', twentyFourHoursAgo)
+    .eq('direction', 'received')
+    .gte('created_at', sevenDaysAgo)
     .order('created_at', { ascending: true });
 
   if (recentEmails && recentEmails.length > 0) {
-    console.log(`🤖 ${recentEmails.length} emails récents à traiter (sur ${result.emails_imported} importés)`);
+    console.log(`🤖 ${recentEmails.length} received récents à traiter (sur ${result.emails_imported} importés)`);
     for (let p = 0; p < recentEmails.length; p++) {
       const pe = recentEmails[p];
       try {
@@ -453,21 +493,61 @@ async function importMail(
     }
     console.log('✅ Pipeline IA post-import terminé');
   } else {
-    console.log(`🤖 Aucun email récent (< 24h) à traiter par l'IA`);
+    console.log(`🤖 Aucun received récent (< 7j) à traiter par l'IA`);
   }
 
-  // Older emails (> 24h) are part of the historical backlog. We don't run the
-  // AI pipeline on them (would be expensive and rarely actionable), and we
-  // mark statut='traite' so they don't appear in the lawyer's TODO list.
-  // Intentional divergence from statutFromPipelineStep('imported') = 'en_attente' :
-  // the canonical mapping applies on pipeline transitions, not on bulk-archive
-  // operations like this one.
+  // ── Step 6b: Date extraction (regex only) on recent SENT emails ──────────
+  // Décision Yoel (Q2): match dossier (déjà fait à l'insert) + extract dates
+  // + extract attachments (déjà fait à l'insert) — pas de filter, pas de
+  // drafter. useLLMFallback=false : limite le coût sur le backfill.
+  const { data: recentSentEmails } = await supabase
+    .from('emails')
+    .select('id, objet, contenu, dossier_id')
+    .eq('user_id', uid)
+    .eq('pipeline_step', 'imported')
+    .eq('direction', 'sent')
+    .gte('created_at', sevenDaysAgo)
+    .not('dossier_id', 'is', null);
+
+  if (recentSentEmails && recentSentEmails.length > 0) {
+    console.log(`📅 ${recentSentEmails.length} sent récents — extraction dates regex only`);
+    for (const se of recentSentEmails) {
+      try {
+        const events = await extractDatesFromEmail({
+          emailBody: se.contenu || '',
+          emailSubject: se.objet || '',
+          useLLMFallback: false,
+        });
+        if (events.length === 0) continue;
+        const rows = events.map((evt) => ({
+          dossier_id: se.dossier_id,
+          user_id: uid,
+          date_start: evt.dateStart,
+          date_end: evt.dateEnd ?? null,
+          title: evt.title,
+          description: evt.description ?? null,
+          source_type: evt.sourceType,
+          source_id: se.id,
+          source_filename: evt.sourceFilename ?? null,
+          confidence: evt.confidence,
+        }));
+        await supabase.from('calendar_events').insert(rows);
+      } catch (err: any) {
+        console.error(`❌ agent-importer: date extraction sent ${se.id}:`, err?.message ?? err);
+      }
+    }
+  }
+
+  // Older emails (> 7j) + tous les sent : pas de pipeline AI → marqués
+  // 'traite' pour qu'ils n'apparaissent pas dans la TODO de l'avocat.
+  // Note : on garde direction='sent' éligibles ici car ils ont déjà passé
+  // par leur propre traitement (step 6b) ou aucun (sent > 7j).
   await supabase
     .from('emails')
     .update({ pipeline_step: 'imported', statut: 'traite' })
     .eq('user_id', uid)
     .eq('pipeline_step', 'imported')
-    .lt('created_at', twentyFourHoursAgo);
+    .or(`created_at.lt.${sevenDaysAgo},direction.eq.sent`);
 
   if (onProgress)
     onProgress({ processed: total, total, dossiers_created: result.dossiers_created, attachments_count: result.documents_extracted });
