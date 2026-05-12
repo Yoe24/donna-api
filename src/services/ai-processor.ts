@@ -6,21 +6,9 @@ import { draftResponse } from './agents/agent-drafter';
 import { enrichDossier } from './dossier-enricher';
 import { extractDatesFromEmail } from './date-extractor';
 import { triggerDriveExport } from './drive-exporter';
-import { extractCaseReference } from './agents/agent-importer';
+import { loadDossierTokens, matchSubjectAgainstTokens } from './case-matcher';
 
-// ─── Canonical case name mapping (mirrors agent-importer) ────────────────────
-const CANONICAL_CASE_NAMES: Record<string, string> = {
-  'BELAIR': 'BELAIR Distribution',
-  'TECHFLOW': 'TechFlow SAS',
-  'BELLINI': 'Bellini SAS',
-  'MARLOT': 'MARLOT Industrie',
-  'LUMIERE': 'LUMIERE Cosmétiques',
-  'LUMIÈRE': 'LUMIERE Cosmétiques',
-};
-
-function getCanonicalCaseName(caseRef: string): string {
-  return CANONICAL_CASE_NAMES[caseRef] || caseRef;
-}
+// Case-name lookup is now dynamic via case-matcher (no more hard-coded whitelist).
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -209,66 +197,17 @@ async function archiveEmail(
     let dossierId: string | null = null;
     const now = new Date().toISOString();
 
-    // ── Fallback 1: CASEREF from subject (highest priority) ──────────────────
-    const caseRef = subject ? extractCaseReference(subject) : null;
+    // ── Fallback 1: subject matches an existing dossier (highest priority) ───
+    // Tokens are derived dynamically from the user's actual dossiers (no whitelist).
+    if (subject) {
+      const tokens = await loadDossierTokens(userId);
+      const match = matchSubjectAgainstTokens(subject, tokens);
 
-    if (caseRef) {
-      console.log(`Archiviste: CASEREF détecté "${caseRef}" depuis sujet "${subject}"`);
+      if (match) {
+        dossierId = match.dossierId;
+        console.log(`Archiviste: subject "${subject}" → dossier ${dossierId.substring(0, 8)} via token "${match.token}" (${match.source})`);
 
-      // Search by metadata->case_reference
-      const { data: byMeta } = await supabase
-        .from('dossiers')
-        .select('id, nom_client')
-        .eq('user_id', userId)
-        .contains('metadata', { case_reference: caseRef })
-        .limit(1)
-        .maybeSingle();
-
-      if (byMeta) {
-        dossierId = byMeta.id;
-        console.log(`Archiviste: dossier CASEREF trouvé (metadata) "${byMeta.nom_client}" (id: ${dossierId})`);
-      } else {
-        // Search by nom_client ILIKE
-        const { data: byNom } = await supabase
-          .from('dossiers')
-          .select('id, nom_client')
-          .eq('user_id', userId)
-          .ilike('nom_client', `%${caseRef}%`)
-          .limit(1)
-          .maybeSingle();
-
-        if (byNom) {
-          dossierId = byNom.id;
-          console.log(`Archiviste: dossier CASEREF trouvé (nom_client) "${byNom.nom_client}" (id: ${dossierId})`);
-        } else {
-          // Create new dossier for this CASEREF
-          const canonicalName = getCanonicalCaseName(caseRef);
-          const { data: newDossier, error: insertError } = await supabase
-            .from('dossiers')
-            .insert({
-              user_id: userId,
-              nom_client: canonicalName,
-              email_client: null,
-              statut: 'actif',
-              domaine: null,
-              dernier_echange_date: now,
-              dernier_echange_par: senderEmail,
-              metadata: { case_reference: caseRef },
-            })
-            .select('id')
-            .single();
-
-          if (insertError) {
-            console.error('Archiviste: erreur création dossier CASEREF:', insertError.message);
-          } else {
-            dossierId = newDossier.id;
-            console.log(`Archiviste: nouveau dossier CASEREF créé "${canonicalName}" (id: ${dossierId})`);
-          }
-        }
-      }
-
-      if (dossierId) {
-        // Update dernier_echange
+        // Update dernier_echange + link email
         await supabase
           .from('dossiers')
           .update({ dernier_echange_date: now, dernier_echange_par: senderEmail })
