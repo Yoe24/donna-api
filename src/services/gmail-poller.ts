@@ -147,6 +147,12 @@ async function checkNewEmailsForUser(
 
       const full = await provider.getFullMessage(rawMsg.id);
 
+      // listMessagesSince ne filtre pas par `in:inbox` côté query Gmail —
+      // les sent (label SENT) y apparaissent aussi. On les laisse à la
+      // boucle suivante (listSentMessages) qui a la logique sent-aware
+      // (matching par recipient, pipeline réduit, statut='traite' direct).
+      if (full.isSent) continue;
+
       const { data: email, error: insertError } = await supabase
         .from('emails')
         .insert({
