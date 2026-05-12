@@ -27,6 +27,7 @@ function isObviouslyProfessional(emailAddress: string, sender: string, subject: 
   const senderLower = (sender || '').toLowerCase();
   const subjectLower = (subject || '').toLowerCase();
 
+  // Sender domain heuristics — juridictions et professions
   if (addr.includes('@justice.fr') || addr.includes('@justice.gouv.fr')) return 'juridiction';
   if (addr.includes('greffe') || addr.includes('tribunal') || addr.includes('jaf')) return 'juridiction';
   if (addr.startsWith('maitre.') || addr.startsWith('me.') || addr.startsWith('cabinet')) return 'confrere';
@@ -38,41 +39,78 @@ function isObviouslyProfessional(emailAddress: string, sender: string, subject: 
   if (addr.startsWith('syndic@') || addr.includes('@foncia') || addr.includes('gestion@')) return 'syndic';
   if (senderLower.includes('syndic') || senderLower.includes('foncia')) return 'syndic';
   if (addr.startsWith('compta@') || addr.startsWith('comptabilite@') || addr.startsWith('facturation@')) return 'cabinet_interne';
-  if (addr.includes('@cabinet-fernandez') || addr.includes('@cabinet')) return 'cabinet_interne';
-  if (subjectLower.match(/\brg\s*\d/) || subjectLower.includes('n° ') || subjectLower.includes('dossier')) return 'reference_dossier';
-  if (subjectLower.includes('convocation') || subjectLower.includes('audience') || subjectLower.includes('assignation')) return 'juridiction';
-  if (subjectLower.includes('succession') || subjectLower.includes('pension') || subjectLower.includes('garde')) return 'reference_dossier';
+  if (addr.includes('@cabinet-') || addr.includes('@etude-') || addr.includes('@conseil-')) return 'cabinet_interne';
+
+  // Subject — référence de dossier (RG, numéro affaire)
+  if (subjectLower.match(/\brg\s*\d/) || subjectLower.match(/\b\d{4}[\/\-]\d{2,5}\b/)) return 'reference_dossier';
+  if (subjectLower.includes('n° ') || subjectLower.includes('dossier')) return 'reference_dossier';
+
+  // Subject — actes judiciaires explicites
+  if (subjectLower.match(/\b(convocation|audience|assignation|plaidoirie|requ[êe]te|ordonnance|jugement|mise en demeure|m[eé]diation|expertise|conclusions)\b/)) return 'juridiction';
+
+  // Subject — droit affaires / M&A / contentieux commercial (vocabulaire métier)
+  if (subjectLower.match(/\b(signature|closing|loi|term ?sheet|transaction|due ?diligence|s[ée]questre|cession|acquisition|protocole|holding|pacte d['']actionnaires|sas\b|sarl\b|sa\b)\b/)) return 'reference_dossier';
+
+  // Subject — droit famille / civil
+  if (subjectLower.match(/\b(succession|pension|garde|divorce|bail|copropri[ée]t[ée]|h[ée]ritier)\b/)) return 'reference_dossier';
 
   return null;
 }
 
-const FILTER_SYSTEM_PROMPT = `Tu es le filtre de tri de Donna, assistante IA d'une avocate française spécialisée en droit civil et droit de la famille.
+// Last-resort safeguard : un email avec marqueurs juridiques évidents ne devrait jamais
+// être classé non-pertinent. Override le LLM si cohérence violée.
+function hasJuridicalMarkers(subject: string, bodyPreview: string): boolean {
+  const text = ((subject || '') + ' ' + (bodyPreview || '')).toLowerCase();
+
+  // Date FR explicite (lundi 18 mai, 12/05/2026, etc.)
+  const hasFrenchDate = /\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+\d{1,2}\s+(janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[ûu]t|septembre|octobre|novembre|d[ée]cembre)/i.test(text)
+    || /\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/.test(text);
+
+  // Montant € (au moins 4 chiffres = ≥ 1000 €, pour éviter les prix de promo style 9,99 €)
+  const hasMoneyAmount = /\b\d{1,3}([ . ]\d{3}){1,}\s*€|\b\d{4,}\s*€|\b\d+(?:[.,]\d+)?\s*(?:k|m|millions?)\s*€/i.test(text);
+
+  // Référence RG / numéro affaire
+  const hasCaseRef = /\b(rg\s*\d|n°\s*\d|\d{4}[\/\-]\d{2,5})/i.test(text);
+
+  return hasFrenchDate || hasMoneyAmount || hasCaseRef;
+}
+
+const FILTER_SYSTEM_PROMPT = `Tu es le filtre de tri de Donna, assistante IA d'une avocate française (tous domaines : droit civil, famille, affaires, M&A, contentieux commercial, immobilier).
 
 Ta mission : déterminer si un email est PERTINENT (doit être traité) ou NON PERTINENT (peut être ignoré).
 
 === PERTINENT (pertinent: true) — TOUJOURS traiter ===
-- Emails de clients (personnes physiques qui écrivent à l'avocate)
+- Emails de clients (personnes physiques ou dirigeants d'entreprise qui écrivent à l'avocate)
 - Emails de confrères avocats (Maître, Me, @avocats-xxx.fr, @barreau-xxx.fr, cabinet-)
-- Emails du greffe et des juridictions (@justice.fr, @justice.gouv.fr, tribunal, greffe, JAF, TGI)
+- Emails du greffe et des juridictions (@justice.fr, @justice.gouv.fr, tribunal, greffe, JAF, TGI, TC)
 - Emails de notaires (@notaires.fr, notaire)
 - Emails d'huissiers et commissaires de justice
-- Emails d'administrations liées aux dossiers (inspection du travail, DIRECCTE, préfecture)
+- Emails d'administrations liées aux dossiers (inspection du travail, DIRECCTE, préfecture, URSSAF, INPI)
 - Emails de syndics et gestionnaires immobiliers (syndic@, Foncia, gestion copropriété)
+- Emails de partenaires d'opération (notaires, experts-comptables, banques, fonds d'investissement)
 - Emails contenant des références de dossier (RG, numéro d'affaire, convocation, audience)
+- Emails liés à des opérations juridiques : signature, closing, LOI (Lettre d'Intention), term sheet, due diligence, séquestre, cession, acquisition, transaction (proposition transactionnelle), conclusions, plaidoirie, médiation, expertise, mise en demeure, requête, ordonnance, jugement
 - Emails de la comptabilité ou gestion interne du cabinet
 - Emails d'assurance professionnelle (RC Pro, renouvellement)
 - Emails de l'Ordre des Avocats (formation, obligation professionnelle)
 - TOUT email qui pourrait concerner un dossier en cours ou l'activité du cabinet
 
 === NON PERTINENT (pertinent: false) — Ignorer ===
-- Newsletters marketing (sauf juridiques professionnelles)
+- Newsletters marketing grand public (sauf juridiques professionnelles)
 - Spam et phishing
-- Publicités commerciales (promotions, soldes, offres)
+- Publicités commerciales de retail (promotions, soldes, codes promo)
 - Réseaux sociaux (notifications LinkedIn, Facebook, etc.)
-- Emails automatiques non professionnels
+- Emails automatiques non professionnels (confirmations achat e-commerce, livraison, etc.)
+
+=== ATTENTION — FAUX AMIS ===
+Le vocabulaire juridique partage des mots avec le vocabulaire commercial. Ne pas confondre :
+- "Offre de transaction" (proposition de règlement amiable d'un litige) ≠ "offre commerciale"
+- "Signature LOI / closing" (étape M&A) ≠ "signature newsletter"
+- "Conclusions" (acte de procédure) ≠ "conclusion d'article"
+- "Mise en demeure" ≠ relance commerciale
 
 === RÈGLE D'OR ===
-DANS LE DOUTE, MARQUE COMME PERTINENT.
+DANS LE DOUTE, MARQUE COMME PERTINENT. Si l'email contient une date, un montant > 1000 €, ou une référence (RG, numéro de dossier), TOUJOURS pertinent.
 
 Réponds UNIQUEMENT en JSON valide sans markdown :
 { "categorie": "client|confrere|juridiction|notaire|administration|cabinet|prospect|spam", "pertinent": true/false, "domaine_type": "professionnel|personnel|inconnu", "commentaire": "une phrase max expliquant pourquoi" }`;
@@ -123,11 +161,23 @@ export async function filterEmail({ subject, sender, bodyPreview, userId }: Filt
     const raw = (completion.choices[0].message.content || '').trim();
     const parsed = JSON.parse(raw);
 
+    let pertinent = typeof parsed.pertinent === 'boolean' ? parsed.pertinent : true;
+    let commentaire = parsed.commentaire || '';
+
+    // Post-LLM safeguard : si LLM dit non-pertinent mais l'email a des marqueurs juridiques
+    // évidents (date FR, montant > 1000 €, référence RG), on override. Mieux vaut un faux
+    // positif qu'un mail-clé perdu.
+    if (!pertinent && hasJuridicalMarkers(subject, bodyPreview)) {
+      console.warn('[filter] LLM said non-pertinent but juridical markers found — override to pertinent. Subject:', subject.substring(0, 80));
+      pertinent = true;
+      commentaire = 'Override safeguard : marqueurs juridiques détectés (date, montant ou référence). LLM avait dit : ' + commentaire;
+    }
+
     return {
       categorie: parsed.categorie || 'prospect',
-      pertinent: typeof parsed.pertinent === 'boolean' ? parsed.pertinent : true,
+      pertinent,
       domaine_type: parsed.domaine_type || 'inconnu',
-      commentaire: parsed.commentaire || ''
+      commentaire
     };
   } catch (e: any) {
     console.error('Filter error:', e.message);
