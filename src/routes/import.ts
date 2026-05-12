@@ -8,10 +8,13 @@ import { enrichDossier } from '../services/dossier-enricher';
 import { supabase } from '../config/supabase';
 import { randomBytes } from 'crypto';
 import { getOutlookAuthUrl, exchangeOutlookCode, OutlookProvider } from '../services/mail/outlook-provider';
+import { GmailProvider } from '../services/mail/gmail-provider';
+import { MailProvider } from '../services/mail/types';
 import { triggerDriveExport } from '../services/drive-exporter';
 import { triggerOneDriveExport } from '../services/onedrive-exporter';
 import { triggerOutlookCalendarExport } from '../services/outlook-calendar-exporter';
 import { isDemoResetUser, resetDemoUser } from '../services/demo-reset';
+import { authMiddleware, AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
@@ -376,6 +379,89 @@ router.get('/callback', async (req: Request, res: Response) => {
 // GET /api/import/status
 router.get('/status', (req: Request, res: Response) => {
   res.json(importState);
+});
+
+// POST /api/import/historical — re-trigger l'import 90j pour l'user authentifié.
+// Cas d'usage : avocat déjà onboardé qui veut re-scanner son historique
+// (mails ratés, post-reset, etc.). L'OAuth callback gère le premier import ;
+// cet endpoint est pour les re-triggers manuels post-onboarding.
+//
+// Provider auto-résolu via configurations.provider. Idempotent au niveau
+// global serveur (refuse 409 si un import est déjà en cours — limite due à
+// l'importState global, héritée du flow OAuth).
+//
+// Frontend : poll GET /api/import/status pour suivre la progression.
+router.post('/historical', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ error: 'Non authentifié' });
+
+  if (importState.status === 'running') {
+    return res.status(409).json({ error: 'Import déjà en cours', state: importState });
+  }
+
+  try {
+    const { data: config, error: cfgErr } = await supabase
+      .from('configurations')
+      .select('provider, refresh_token, outlook_refresh_token')
+      .eq('user_id', userId)
+      .single();
+
+    if (cfgErr || !config) {
+      return res.status(404).json({ error: 'Configuration utilisateur introuvable' });
+    }
+
+    let provider: MailProvider;
+    const providerName: 'gmail' | 'outlook' = config.provider === 'outlook' ? 'outlook' : 'gmail';
+    if (providerName === 'outlook') {
+      if (!config.outlook_refresh_token) {
+        return res.status(400).json({ error: 'Outlook non connecté pour cet utilisateur' });
+      }
+      provider = new OutlookProvider({ refreshToken: config.outlook_refresh_token, userId });
+    } else {
+      if (!config.refresh_token) {
+        return res.status(400).json({ error: 'Gmail non connecté pour cet utilisateur' });
+      }
+      provider = new GmailProvider({ refreshToken: config.refresh_token, userId });
+    }
+
+    importState = { status: 'running', processed: 0, total: 0, dossiers_created: 0, attachments_count: 0, last_result: null };
+    console.log(`[/api/import/historical] Lancé pour user ${userId.substring(0, 8)} (provider: ${providerName})`);
+
+    importFromProvider(provider, userId, (progress: any) => {
+      importState.processed = progress.processed;
+      importState.total = progress.total;
+      importState.dossiers_created = progress.dossiers_created;
+      importState.attachments_count = progress.attachments_count || 0;
+    }).then(async (result: any) => {
+      importState.status = 'done';
+      importState.last_result = result;
+      console.log('[/api/import/historical] terminé:', result);
+      try {
+        await mergeDossiers(userId);
+        console.log('[/api/import/historical] fusion dossiers OK');
+      } catch (e: any) {
+        console.error('[/api/import/historical] fusion erreur:', e.message);
+      }
+      try {
+        await enrichAllDossiers(userId);
+      } catch (e: any) {
+        console.error('[/api/import/historical] enrichissement erreur:', e.message);
+      }
+      // Note: pas de brief / email briefing / drive export ici (re-trigger
+      // volontaire, pas un onboarding). Le cron quotidien régénère le brief.
+    }).catch((err: any) => {
+      importState.status = 'error';
+      console.error('[/api/import/historical] erreur:', err.message);
+    });
+
+    return res.json({
+      status: 'started',
+      progress_url: '/api/import/status',
+    });
+  } catch (err: any) {
+    console.error('[/api/import/historical] erreur:', err.message);
+    return res.status(500).json({ error: 'Import historique impossible', details: err.message });
+  }
 });
 
 // POST /api/import/simulate — Simulate import progress for testing cinematic
