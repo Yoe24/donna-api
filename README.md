@@ -1,4 +1,5 @@
 # Donna MVP - AI Legal Email Assistant
+<!-- arya/builder smoke-via-worker 2026-04-26 -->
 
 ## Quick Start
 
